@@ -1,6 +1,6 @@
 import { z } from "zod";
-import type { EnvironmentPlugin } from "./_interface.js";
-import { registerEnvironment } from "./_registry.js";
+import type { EnvironmentPlugin } from "./interface.js";
+import { registerEnvironment } from "./registry.js";
 
 // Noop environment plugin: the default kind for scenarios that need nothing
 // beyond shell steps and assertions. It exists for two reasons.

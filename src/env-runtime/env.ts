@@ -20,6 +20,8 @@ export interface Env {
   readonly home: string;
   readonly cwd: string;
   readonly env: Readonly<Record<string, string | undefined>>;
+  readonly exec: string;
+  readonly platform: NodeJS.Platform;
   readonly clock: ClockFacade;
   readonly logger: LoggerFacade;
 }
@@ -44,6 +46,9 @@ const defaultLogger: LoggerFacade = {
 export function createNodeEnv(opts: CreateNodeEnvOptions = {}): Env {
   // Snapshot HOME-equivalent and full env at construction. USERPROFILE is the
   // Windows native, HOME is POSIX. Test runners set both to a sandbox tmpdir.
+  // exec and platform are also snapshotted here so tool plugins like kash can
+  // reach the host node binary and OS family without re-reading process.*
+  // outside this single chokepoint.
   const home = process.env.USERPROFILE ?? process.env.HOME ?? "";
   const envSnapshot: Record<string, string | undefined> = { ...process.env };
   const cwd = opts.cwd ?? process.cwd();
@@ -53,6 +58,8 @@ export function createNodeEnv(opts: CreateNodeEnvOptions = {}): Env {
     home,
     cwd,
     env: Object.freeze(envSnapshot),
+    exec: process.execPath,
+    platform: process.platform,
     clock: {
       now: (): number => Date.now(),
       isoNow: (): string => new Date().toISOString(),

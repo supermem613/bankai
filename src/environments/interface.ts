@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { Env } from "../env-runtime/env.js";
-import type { LifecycleScope } from "./_lifecycle-scope.js";
+import type { LifecycleScope } from "./lifecycle-scope.js";
 
 // EnvironmentPlugin: the open extension point for the bankai engine. While
 // step kinds and assertion kinds are intentionally closed, an environment

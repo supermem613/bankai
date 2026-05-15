@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { spawn } from "node:child_process";
 import { resolve as resolvePath, isAbsolute as isAbsolutePath } from "node:path";
-import { registerStep, type StepContext } from "./_registry.js";
+import { registerStep, type StepContext } from "./registry.js";
 import type { BankaiStepResult } from "../schema/envelope.js";
 
 // Shell step kind: runs a single short-lived command and captures stdout,

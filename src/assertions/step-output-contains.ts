@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { registerAssertion, type AssertionContext } from "./_registry.js";
+import { registerAssertion, type AssertionContext } from "./registry.js";
 import type { BankaiAssertionResult } from "../schema/envelope.js";
 
 // step-output-contains: assert that a prior step's stdout or stderr contains

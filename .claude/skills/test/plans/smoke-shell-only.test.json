@@ -1,0 +1,23 @@
+{
+  "schemaVersion": "1",
+  "name": "smoke-shell-only",
+  "description": "Trivial smoke plan. Verifies bankai is wired and the test orchestrator round-trips a single shell step + stdout assertion. Adapt by replacing the command and the expected substring.",
+  "steps": [
+    {
+      "kind": "shell",
+      "id": "say-hello",
+      "command": "node",
+      "args": ["-e", "process.stdout.write('hello bankai world')"],
+      "timeoutMs": 10000
+    }
+  ],
+  "assertions": [
+    {
+      "kind": "step-output-contains",
+      "id": "stdout-has-hello",
+      "stepId": "say-hello",
+      "stream": "stdout",
+      "text": "hello bankai"
+    }
+  ]
+}

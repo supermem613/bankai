@@ -1,5 +1,5 @@
 import type { z } from "zod";
-import type { EnvironmentPlugin } from "./_interface.js";
+import type { EnvironmentPlugin } from "./interface.js";
 
 // Environment plugin registry. Mirrors the step and assertion registries.
 // Invariants the next editor must preserve:

@@ -9,9 +9,9 @@ import {
   registerEnvironment,
   getEnvironment,
   listEnvironments,
-} from "../../src/environments/_registry.js";
-import { createLifecycleScope } from "../../src/environments/_lifecycle-scope.js";
-import type { EnvironmentPlugin } from "../../src/environments/_interface.js";
+} from "../../src/environments/registry.js";
+import { createLifecycleScope } from "../../src/environments/lifecycle-scope.js";
+import type { EnvironmentPlugin } from "../../src/environments/interface.js";
 import { runScenario } from "../../src/orchestrators/test.js";
 import "../../src/environments/index.js";
 import { z } from "zod";

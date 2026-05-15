@@ -5,15 +5,16 @@ import type {
   BankaiAssertionResult,
   BankaiTestFailure,
 } from "../schema/envelope.js";
-import { getStepHandler } from "../steps/_registry.js";
-import { getAssertionHandler } from "../assertions/_registry.js";
-import { getEnvironment } from "../environments/_registry.js";
-import { createLifecycleScope } from "../environments/_lifecycle-scope.js";
-import type { EnvironmentHandle } from "../environments/_interface.js";
+import { getStepHandler } from "../steps/registry.js";
+import { getAssertionHandler } from "../assertions/registry.js";
+import { getEnvironment } from "../environments/registry.js";
+import { createLifecycleScope } from "../environments/lifecycle-scope.js";
+import type { EnvironmentHandle } from "../environments/interface.js";
 import type { Env } from "../env-runtime/env.js";
 import "../steps/index.js";
 import "../assertions/index.js";
 import "../environments/index.js";
+import "../tools/index.js";
 
 // Test orchestrator: drives a single scenario from validated spec to envelope.
 // Invariants the next editor must preserve:

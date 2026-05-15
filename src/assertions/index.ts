@@ -4,3 +4,4 @@
 // import below.
 
 import "./step-output-contains.js";
+import "./assert-text-contains.js";

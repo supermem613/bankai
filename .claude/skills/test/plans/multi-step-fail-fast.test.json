@@ -1,0 +1,37 @@
+{
+  "schemaVersion": "1",
+  "name": "multi-step-fail-fast",
+  "description": "Demonstrates the multi-step envelope. Step A passes. Step B deliberately fails with a non-zero exit. Step C is never run because step B failed. Because a step failed, the assertions array in the envelope is empty by design (assertions only run when every step passes). The envelope.failure.stage is 'step' and failure.id is 'step-b-fail'. Use this when authoring a new plan to confirm your understanding of envelope.failure semantics.",
+  "steps": [
+    {
+      "kind": "shell",
+      "id": "step-a-pass",
+      "command": "node",
+      "args": ["-e", "process.stdout.write('A ok')"],
+      "timeoutMs": 5000
+    },
+    {
+      "kind": "shell",
+      "id": "step-b-fail",
+      "command": "node",
+      "args": ["-e", "process.stderr.write('B intentional failure'); process.exit(3)"],
+      "timeoutMs": 5000
+    },
+    {
+      "kind": "shell",
+      "id": "step-c-never-runs",
+      "command": "node",
+      "args": ["-e", "process.stdout.write('C')"],
+      "timeoutMs": 5000
+    }
+  ],
+  "assertions": [
+    {
+      "kind": "step-output-contains",
+      "id": "a-says-ok",
+      "stepId": "step-a-pass",
+      "stream": "stdout",
+      "text": "A ok"
+    }
+  ]
+}
