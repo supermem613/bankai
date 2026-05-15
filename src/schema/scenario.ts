@@ -29,10 +29,21 @@ export const AssertionRefSchema = z
 
 export type AssertionRef = z.infer<typeof AssertionRefSchema>;
 
+export const EnvironmentRefSchema = z
+  .object({
+    kind: z.string().min(1),
+    config: z.unknown().optional(),
+    setupTimeoutMs: z.number().int().positive().optional(),
+  })
+  .passthrough();
+
+export type EnvironmentRef = z.infer<typeof EnvironmentRefSchema>;
+
 export const ScenarioV1Schema = z.object({
   schemaVersion: z.literal("1"),
   name: z.string().min(1),
   description: z.string().optional(),
+  environment: EnvironmentRefSchema.optional(),
   steps: z.array(StepRefSchema).default([]),
   assertions: z.array(AssertionRefSchema).default([]),
 });

@@ -3,12 +3,17 @@ import type {
   BankaiTestEnvelope,
   BankaiStepResult,
   BankaiAssertionResult,
+  BankaiTestFailure,
 } from "../schema/envelope.js";
 import { getStepHandler } from "../steps/_registry.js";
 import { getAssertionHandler } from "../assertions/_registry.js";
+import { getEnvironment } from "../environments/_registry.js";
+import { createLifecycleScope } from "../environments/_lifecycle-scope.js";
+import type { EnvironmentHandle } from "../environments/_interface.js";
 import type { Env } from "../env-runtime/env.js";
 import "../steps/index.js";
 import "../assertions/index.js";
+import "../environments/index.js";
 
 // Test orchestrator: drives a single scenario from validated spec to envelope.
 // Invariants the next editor must preserve:
@@ -22,6 +27,13 @@ import "../assertions/index.js";
 //      assertion ok values.
 //   3. Duplicate ids within steps or assertions are rejected at validation.
 //      Assertion stepId references must point at a real step id.
+//   4. Environment lifecycle is bracketed around steps and assertions. setup
+//      runs after preflight validation. teardown runs in a finally block so
+//      it executes whether or not steps succeed. A partial setup throw
+//      triggers scope.unwind so any resources acquired before the throw are
+//      released even though no handle exists yet.
+
+const DEFAULT_SETUP_TIMEOUT_MS = 30_000;
 
 export interface RunScenarioOptions {
   scenarioJson: unknown;
@@ -63,50 +75,145 @@ export async function runScenario(opts: RunScenarioOptions): Promise<BankaiTestE
     };
   }
 
-  const stepResults: BankaiStepResult[] = [];
-  let stepFailure: BankaiTestEnvelope["failure"];
-  for (const stepRef of scenario.steps) {
-    const handler = getStepHandler(stepRef.kind);
-    const spec = handler.schema.parse(stepRef);
-    const result = await handler.run(spec, {
-      env: opts.env,
-      workDir: opts.workDir,
-      scenarioName: scenario.name,
-    });
-    stepResults.push({ id: stepRef.id, kind: stepRef.kind, ...result });
-    if (!result.ok) {
-      stepFailure = {
-        stage: "step",
-        id: stepRef.id,
-        reason: result.error ?? "step failed without a reason",
-      };
-      break;
-    }
+  const envRef = scenario.environment ?? { kind: "noop" };
+  const envPlugin = getEnvironment(envRef.kind);
+  if (!envPlugin) {
+    return {
+      schemaVersion: "1",
+      ok: false,
+      scenario: scenario.name,
+      durationMs: opts.env.clock.now() - start,
+      steps: [],
+      assertions: [],
+      failure: {
+        stage: "validation",
+        id: "environment",
+        reason: `unknown environment kind: ${envRef.kind}`,
+      },
+    };
   }
 
-  const assertionResults: BankaiAssertionResult[] = [];
-  let assertionFailure: BankaiTestEnvelope["failure"];
-  if (!stepFailure) {
-    for (const assertionRef of scenario.assertions) {
-      const handler = getAssertionHandler(assertionRef.kind);
-      const spec = handler.schema.parse(assertionRef);
-      const result = await handler.evaluate(spec, {
+  const configParse = envPlugin.configSchema.safeParse(envRef.config ?? {});
+  if (!configParse.success) {
+    return {
+      schemaVersion: "1",
+      ok: false,
+      scenario: scenario.name,
+      durationMs: opts.env.clock.now() - start,
+      steps: [],
+      assertions: [],
+      failure: {
+        stage: "validation",
+        id: "environment",
+        reason: configParse.error.issues
+          .map((i) => `${i.path.join(".")}: ${i.message}`)
+          .join("; "),
+      },
+    };
+  }
+
+  const scope = createLifecycleScope({
+    onCleanupError: (err) => {
+      opts.env.logger.warn(`env cleanup error: ${err instanceof Error ? err.message : String(err)}`);
+    },
+  });
+  const timeoutMs = envRef.setupTimeoutMs ?? DEFAULT_SETUP_TIMEOUT_MS;
+  const abortController = new AbortController();
+  const timeoutHandle = setTimeout(() => {
+    abortController.abort(new Error(`environment setup exceeded ${timeoutMs}ms`));
+  }, timeoutMs);
+
+  let handle: EnvironmentHandle | undefined;
+  try {
+    handle = await envPlugin.setup(
+      {
         env: opts.env,
         workDir: opts.workDir,
-        stepResults,
+        scenarioName: scenario.name,
+        scope,
+        signal: abortController.signal,
+        timeoutMs,
+      },
+      configParse.data,
+    );
+  } catch (err) {
+    clearTimeout(timeoutHandle);
+    await scope.unwind();
+    return {
+      schemaVersion: "1",
+      ok: false,
+      scenario: scenario.name,
+      durationMs: opts.env.clock.now() - start,
+      steps: [],
+      assertions: [],
+      failure: {
+        stage: "env-setup",
+        id: envRef.kind,
+        reason: err instanceof Error ? err.message : String(err),
+      },
+    };
+  }
+  clearTimeout(timeoutHandle);
+
+  const stepResults: BankaiStepResult[] = [];
+  const assertionResults: BankaiAssertionResult[] = [];
+  let stepFailure: BankaiTestFailure | undefined;
+  let assertionFailure: BankaiTestFailure | undefined;
+  let teardownFailure: BankaiTestFailure | undefined;
+
+  try {
+    for (const stepRef of scenario.steps) {
+      const handler = getStepHandler(stepRef.kind);
+      const spec = handler.schema.parse(stepRef);
+      const result = await handler.run(spec, {
+        env: opts.env,
+        workDir: opts.workDir,
+        scenarioName: scenario.name,
       });
-      assertionResults.push({ id: assertionRef.id, kind: assertionRef.kind, ...result });
-      if (!result.ok && !assertionFailure) {
-        assertionFailure = {
-          stage: "assertion",
-          id: assertionRef.id,
-          reason: result.detail,
+      stepResults.push({ id: stepRef.id, kind: stepRef.kind, ...result });
+      if (!result.ok) {
+        stepFailure = {
+          stage: "step",
+          id: stepRef.id,
+          reason: result.error ?? "step failed without a reason",
         };
+        break;
       }
     }
+
+    if (!stepFailure) {
+      for (const assertionRef of scenario.assertions) {
+        const handler = getAssertionHandler(assertionRef.kind);
+        const spec = handler.schema.parse(assertionRef);
+        const result = await handler.evaluate(spec, {
+          env: opts.env,
+          workDir: opts.workDir,
+          stepResults,
+        });
+        assertionResults.push({ id: assertionRef.id, kind: assertionRef.kind, ...result });
+        if (!result.ok && !assertionFailure) {
+          assertionFailure = {
+            stage: "assertion",
+            id: assertionRef.id,
+            reason: result.detail,
+          };
+        }
+      }
+    }
+  } finally {
+    try {
+      await handle.teardown();
+    } catch (err) {
+      teardownFailure = {
+        stage: "env-teardown",
+        id: envRef.kind,
+        reason: err instanceof Error ? err.message : String(err),
+      };
+    }
+    await scope.unwind();
   }
 
-  const failure = stepFailure ?? assertionFailure;
+  const failure = stepFailure ?? assertionFailure ?? teardownFailure;
   return {
     schemaVersion: "1",
     ok: !failure,
@@ -118,7 +225,7 @@ export async function runScenario(opts: RunScenarioOptions): Promise<BankaiTestE
   };
 }
 
-function preflightValidate(scenario: ScenarioV1): BankaiTestEnvelope["failure"] | undefined {
+function preflightValidate(scenario: ScenarioV1): BankaiTestFailure | undefined {
   const seenStepIds = new Set<string>();
   for (const step of scenario.steps) {
     if (seenStepIds.has(step.id)) {
@@ -175,3 +282,4 @@ function preflightValidate(scenario: ScenarioV1): BankaiTestEnvelope["failure"] 
 
   return undefined;
 }
+

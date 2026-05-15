@@ -29,7 +29,7 @@ export interface BankaiAssertionResult {
 }
 
 export interface BankaiTestFailure {
-  stage: "validation" | "step" | "assertion";
+  stage: "validation" | "env-setup" | "step" | "assertion" | "env-teardown";
   id: string;
   reason: string;
 }
