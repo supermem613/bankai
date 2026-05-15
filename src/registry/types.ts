@@ -1,0 +1,71 @@
+import { z } from "zod";
+
+// Registry shapes. The registry is a per-user file at
+// <env.home>/.bankai/state/registry.json that records every persisted
+// handle (a setup step run with `registerAs: "name"`).
+//
+// Invariants the next editor must preserve:
+//   1. Entries are keyed by the user-chosen `name` from a setup step's
+//      registerAs field. NEVER planName, because two distinct plans may
+//      register handles for different services.
+//   2. `cwd` is captured at registration so `bankai status` can show
+//      which directory the handle was registered from. The orchestrator
+//      does NOT use cwd at status or stop time. Stop is name-based, not
+//      cwd-based.
+//   3. Entries NEVER persist secrets or full env. Only the operational
+//      handle. A future env field would be a security regression.
+//   4. ProcessFingerprint is captured at registration. `bankai stop`
+//      verifies fingerprint before signaling so a reused pid cannot be
+//      mistakenly killed.
+
+export const ProcessFingerprintSchema = z.object({
+  creationTime: z.string().min(1),
+  commandLine: z.string(),
+});
+
+export type ProcessFingerprint = z.infer<typeof ProcessFingerprintSchema>;
+
+export const ReadinessObservationSchema = z.object({
+  id: z.string().min(1),
+  kind: z.string().min(1),
+  ok: z.boolean(),
+  detail: z.string(),
+  checkedAt: z.string().min(1),
+});
+
+export type ReadinessObservation = z.infer<typeof ReadinessObservationSchema>;
+
+// ProcessHandle is the operational shape of a started process. Both
+// scoped setup steps (no registerAs) and persistent setup steps (with
+// registerAs) produce one. Readiness probes consume it. The registry
+// extends it with name, planName, planPath, cwd, registeredAt for the
+// persisted case.
+export const ProcessHandleSchema = z.object({
+  pid: z.number().int().positive(),
+  command: z.string().min(1),
+  args: z.array(z.string()).default([]),
+  workDir: z.string().min(1),
+  envKind: z.string().min(1),
+  logFile: z.string().min(1),
+  logStartOffset: z.number().int().nonnegative().default(0),
+  fingerprint: ProcessFingerprintSchema.optional(),
+});
+
+export type ProcessHandle = z.infer<typeof ProcessHandleSchema>;
+
+export const RegistryEntrySchema = ProcessHandleSchema.extend({
+  name: z.string().min(1),
+  planName: z.string().min(1),
+  planPath: z.string().min(1),
+  cwd: z.string().min(1),
+  registeredAt: z.string().min(1),
+});
+
+export type RegistryEntry = z.infer<typeof RegistryEntrySchema>;
+
+export const RegistryFileSchema = z.object({
+  schemaVersion: z.literal("1"),
+  entries: z.record(z.string().min(1), RegistryEntrySchema).default({}),
+});
+
+export type RegistryFile = z.infer<typeof RegistryFileSchema>;

@@ -36,7 +36,7 @@ export interface CheckResult {
 export interface ToolContext {
   env: Env;
   workDir: string;
-  scenarioName: string;
+  planName: string;
   signal: AbortSignal;
   timeoutMs: number;
 }

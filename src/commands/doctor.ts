@@ -1,53 +1,208 @@
-import chalk from "chalk";
+import { resolve } from "node:path";
+import { unlink } from "node:fs/promises";
+import { createNodeEnv, type Env } from "../env-runtime/env.js";
+import { createRunLogger } from "../log/jsonl.js";
+import { resolveRepoRoot } from "../repo-root.js";
+import { createRegistryStore } from "../registry/store.js";
+import { isProcessAlive } from "../process-tree.js";
+import { loadPlan } from "../plan/load.js";
+import { listEnvironments, getEnvironment } from "../environments/registry.js";
+import { listTools, getTool } from "../tools/registry.js";
+import type { BankaiEnvelope } from "../plan/envelope.js";
 
-// CheckResult shape is the convention across rotunda/reflux/kash/sp-tools.
-// Keep it stable: tooling and `--json` consumers depend on it.
-export interface CheckResult {
+// `bankai doctor [--plan <path>] [--prune]` — comprehensive health
+// check. Always:
+//   * Node version >= 24
+//   * Bankai install integrity (steps registry populated)
+//   * Per-env-plugin doctor()
+//   * Per-tool-plugin doctor() with default config
+//   * Stale registry scan; with --prune, remove dead entries
+//   * Stale lock-file scan
+// Optional:
+//   * Plan validation (with --plan <path>)
+
+export interface DoctorCommandOptions {
+  planPath?: string;
+  prune?: boolean;
+  env?: Env;
+  logDir?: string;
+  logFile?: string;
+  repoRoot?: string;
+}
+
+interface Check {
   name: string;
   ok: boolean;
   detail: string;
   hint?: string;
 }
 
-function checkNode(): CheckResult {
-  const major = parseInt(process.versions.node.split(".")[0], 10);
-  if (major < 24) {
-    return {
-      name: "node",
-      ok: false,
-      detail: `Node ${process.versions.node} (need >=24)`,
-      hint: "Install Node 24 or later from https://nodejs.org",
-    };
-  }
-  return { name: "node", ok: true, detail: `Node ${process.versions.node}` };
-}
+const REQUIRED_NODE_MAJOR = 24;
 
-async function runChecks(): Promise<CheckResult[]> {
-  return [
-    checkNode(),
-    // Add more checks here. Pattern: each check is a pure function returning
-    // CheckResult. Failures should always carry a `hint` with remediation.
-  ];
-}
+export async function runDoctorCommand(opts: DoctorCommandOptions): Promise<BankaiEnvelope> {
+  const env = opts.env ?? createNodeEnv();
+  const repoRoot = resolveRepoRoot({ env, override: opts.repoRoot });
+  const startedAt = env.clock.isoNow();
+  const startedNow = env.clock.now();
+  const logger = createRunLogger({
+    env,
+    command: "doctor",
+    logsDir: opts.logDir ?? resolve(repoRoot, ".bankai", "logs"),
+    logFile: opts.logFile,
+  });
+  logger.emit("doctor.start", { planPath: opts.planPath, prune: opts.prune, repoRoot });
 
-export async function doctorCommand(opts: { json?: boolean }): Promise<void> {
-  const results = await runChecks();
-  const allOk = results.every((r) => r.ok);
+  const checks: Check[] = [];
 
-  if (opts.json) {
-    process.stdout.write(JSON.stringify({ ok: allOk, checks: results }, null, 2) + "\n");
-    process.exit(allOk ? 0 : 1);
-  }
+  // 1. Node version.
+  const nodeMajor = parseInt(process.versions.node.split(".")[0]!, 10);
+  checks.push({
+    name: "node-version",
+    ok: nodeMajor >= REQUIRED_NODE_MAJOR,
+    detail: `node ${process.versions.node}`,
+    hint: nodeMajor >= REQUIRED_NODE_MAJOR ? undefined : `bankai requires Node ${REQUIRED_NODE_MAJOR}+`,
+  });
 
-  console.log(chalk.bold(`bankai doctor\n`));
-  for (const r of results) {
-    const icon = r.ok ? chalk.green("✓") : chalk.red("✗");
-    console.log(`  ${icon} ${r.name.padEnd(20, ".")} ${r.detail}`);
-    if (!r.ok && r.hint) {
-      console.log(`      ${chalk.dim(r.hint)}`);
+  // 2. Step kind registry populated.
+  const { listRegisteredStepKinds } = await import("../steps/registry.js");
+  const stepKinds = listRegisteredStepKinds();
+  checks.push({
+    name: "step-registry",
+    ok: stepKinds.length >= 7,
+    detail: `${stepKinds.length} step kinds registered: ${stepKinds.join(", ")}`,
+    hint: stepKinds.length >= 7 ? undefined : "core step kinds missing; bankai install is corrupt",
+  });
+
+  // 3. Per-env-plugin doctor.
+  for (const kind of listEnvironments()) {
+    const plugin = getEnvironment(kind)!;
+    try {
+      const r = await plugin.doctor(env);
+      for (const c of r) {
+        checks.push({ ...c, name: `env:${kind}:${c.name}` });
+      }
+    } catch (err) {
+      checks.push({
+        name: `env:${kind}`,
+        ok: false,
+        detail: `doctor threw: ${(err as Error).message}`,
+      });
     }
   }
-  console.log();
-  console.log(allOk ? chalk.green("All checks passed.") : chalk.red("One or more checks failed."));
-  process.exit(allOk ? 0 : 1);
+
+  // 4. Per-tool-plugin doctor with empty config (each plugin's schema must default).
+  for (const kind of listTools()) {
+    const plugin = getTool(kind)!;
+    try {
+      const cfg = plugin.configSchema.parse({});
+      const r = await plugin.doctor(env, cfg);
+      for (const c of r) {
+        checks.push({ ...c, name: `tool:${kind}:${c.name}` });
+      }
+    } catch (err) {
+      checks.push({
+        name: `tool:${kind}`,
+        ok: false,
+        detail: `doctor threw: ${(err as Error).message}`,
+      });
+    }
+  }
+
+  // 5. Registry stale scan (with optional prune).
+  const store = createRegistryStore({ env });
+  const file = await store.read();
+  let pruned = 0;
+  for (const entry of Object.values(file.entries)) {
+    const alive = isProcessAlive(entry.pid);
+    checks.push({
+      name: `registry:${entry.name}`,
+      ok: alive,
+      detail: `pid ${entry.pid} (${entry.envKind}) ${alive ? "alive" : "DEAD"}`,
+      hint: alive ? undefined : opts.prune ? "removed by --prune" : "rerun with --prune to clean up",
+    });
+    if (!alive && opts.prune) {
+      await store.removeEntry(entry.name);
+      pruned += 1;
+      logger.emit("registry.remove", { name: entry.name, pid: entry.pid, reason: "doctor.prune" });
+    }
+  }
+  if (pruned > 0) {
+    checks.push({ name: "registry-prune", ok: true, detail: `pruned ${pruned} stale entry(ies)` });
+  }
+
+  // 6. Stale lock scan.
+  try {
+    const { readFile, stat } = await import("node:fs/promises");
+    let lockExists = true;
+    let lockPid: number | undefined;
+    let lockAgeMs = 0;
+    try {
+      const raw = await readFile(store.lockFilePath, "utf8");
+      const s = await stat(store.lockFilePath);
+      lockPid = parseInt(raw.trim(), 10);
+      lockAgeMs = Date.now() - s.mtimeMs;
+    } catch {
+      lockExists = false;
+    }
+    if (!lockExists) {
+      checks.push({ name: "registry-lock", ok: true, detail: "no lock file present" });
+    } else {
+      const lockAlive = lockPid && Number.isFinite(lockPid) ? isProcessAlive(lockPid) : false;
+      const stale = !lockAlive;
+      if (stale && opts.prune) {
+        await unlink(store.lockFilePath);
+        checks.push({ name: "registry-lock", ok: true, detail: `stale lock (pid ${lockPid}, age ${lockAgeMs}ms) removed by --prune` });
+      } else {
+        checks.push({
+          name: "registry-lock",
+          ok: !stale,
+          detail: `lock held by pid ${lockPid} (age ${lockAgeMs}ms)${lockAlive ? " alive" : " DEAD"}`,
+          hint: stale ? "stale lock; rerun with --prune to clean up" : undefined,
+        });
+      }
+    }
+  } catch (err) {
+    checks.push({ name: "registry-lock", ok: false, detail: `lock scan failed: ${(err as Error).message}` });
+  }
+
+  // 7. Optional plan validation.
+  if (opts.planPath) {
+    const loaded = await loadPlan({ env, planPath: opts.planPath });
+    if (!loaded.ok) {
+      checks.push({
+        name: `plan:${opts.planPath}`,
+        ok: false,
+        detail: loaded.reason,
+        hint: loaded.detail ? JSON.stringify(loaded.detail) : undefined,
+      });
+    } else {
+      checks.push({
+        name: `plan:${loaded.plan.name}`,
+        ok: true,
+        detail: `${loaded.plan.steps.length} step(s); kinds: ${loaded.plan.steps.map((s) => s.kind).join(", ")}`,
+      });
+    }
+  }
+
+  for (const c of checks) {
+    logger.emit("doctor.check", c as unknown as Record<string, unknown>);
+  }
+
+  const ok = checks.every((c) => c.ok);
+  const finishedAt = env.clock.isoNow();
+  const envelope: BankaiEnvelope = {
+    ok,
+    command: "doctor",
+    startedAt,
+    finishedAt,
+    durationMs: env.clock.now() - startedNow,
+    runId: logger.runId,
+    logFile: logger.logFilePath,
+    steps: [],
+    checks,
+    failure: ok ? undefined : { stage: "doctor", reason: `${checks.filter((c) => !c.ok).length} check(s) failed` },
+  };
+  logger.emit("doctor.end", { ok, total: checks.length });
+  await logger.close();
+  return envelope;
 }

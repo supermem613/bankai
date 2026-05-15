@@ -1,22 +1,24 @@
 import { z } from "zod";
 import { readFile } from "node:fs/promises";
 import { resolve as resolvePath, isAbsolute as isAbsolutePath } from "node:path";
-import { registerAssertion, type AssertionContext } from "./registry.js";
-import type { BankaiAssertionResult } from "../schema/envelope.js";
+import { registerAssertion, type AssertionContext, type AssertionOutcome } from "./registry.js";
 
-// assert-text-contains: assert that a file on disk contains a given substring.
-// Distinct from step-output-contains which reads a prior step's stdout or
-// stderr. This kind exists because kash-prompt and other step kinds write
-// their response to a separate output file rather than to stdout, and tests
-// also need to assert on artifacts produced under the scenario workDir.
+// assert-text-contains: assert that a file on disk contains a given
+// substring. Distinct from step-output-contains which reads a prior
+// step's stdout or stderr. This kind exists because tools may write
+// their response to a separate output file rather than to stdout, and
+// tests also need to assert on artifacts produced under the plan
+// workDir.
 //
 // Invariants the next editor must preserve:
-//   1. file is resolved against ctx.workDir when relative. Absolute paths are
-//      honored as-is. Same contract the shell step uses for cwd.
-//   2. The match is plain substring. Regex matching belongs in a separate
-//      kind so the spec stays unambiguous about escaping rules.
-//   3. ENOENT and unreadable files surface as ok=false with a clear detail.
-//      They never throw out of the assertion handler.
+//   1. file is resolved against ctx.workDir when relative. Absolute
+//      paths are honored as-is. Same contract the shell step uses for
+//      cwd.
+//   2. The match is plain substring. Regex matching belongs in a
+//      separate kind so the spec stays unambiguous about escaping
+//      rules.
+//   3. ENOENT and unreadable files surface as ok=false with a clear
+//      detail. They never throw out of the assertion handler.
 //   4. detail must be safe to log. Do not include file contents.
 
 export const AssertTextContainsAssertionV1Schema = z.object({
@@ -31,7 +33,7 @@ export type AssertTextContainsAssertionV1 = z.infer<typeof AssertTextContainsAss
 async function evaluateAssertTextContains(
   spec: AssertTextContainsAssertionV1,
   ctx: AssertionContext,
-): Promise<Omit<BankaiAssertionResult, "id" | "kind">> {
+): Promise<AssertionOutcome> {
   const absolute = isAbsolutePath(spec.file) ? spec.file : resolvePath(ctx.workDir, spec.file);
   let contents: string;
   try {

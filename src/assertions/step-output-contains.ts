@@ -1,13 +1,13 @@
 import { z } from "zod";
-import { registerAssertion, type AssertionContext } from "./registry.js";
-import type { BankaiAssertionResult } from "../schema/envelope.js";
+import { registerAssertion, type AssertionContext, type AssertionOutcome } from "./registry.js";
 
-// step-output-contains: assert that a prior step's stdout or stderr contains
-// a given substring. Invariants the next editor must preserve:
-//   1. The referenced step must have run. If stepId does not match any prior
-//      step, the assertion fails with a clear "no such step" detail.
-//   2. The match is plain substring. Regex matching belongs in a separate
-//      kind so the spec stays unambiguous about escaping rules.
+// step-output-contains: assert that a prior step's stdout or stderr
+// contains a given substring. Invariants the next editor must preserve:
+//   1. The referenced step must have run AND must be a shell or tool
+//      step (the only kinds that produce stdout/stderr). Other kinds
+//      surface a clear error.
+//   2. The match is plain substring. Regex matching belongs in a
+//      separate kind so the spec stays unambiguous about escaping.
 
 export const StepOutputContainsAssertionV1Schema = z.object({
   kind: z.literal("step-output-contains"),
@@ -22,12 +22,22 @@ export type StepOutputContainsAssertionV1 = z.infer<typeof StepOutputContainsAss
 async function evaluateStepOutputContains(
   spec: StepOutputContainsAssertionV1,
   ctx: AssertionContext,
-): Promise<Omit<BankaiAssertionResult, "id" | "kind">> {
-  const step = ctx.stepResults.find((s) => s.id === spec.stepId);
+): Promise<AssertionOutcome> {
+  const step = ctx.priorResults.get(spec.stepId);
   if (!step) {
-    return { ok: false, detail: `no step with id "${spec.stepId}" was run` };
+    return { ok: false, detail: `no prior step with id "${spec.stepId}" in this plan` };
   }
-  const haystack = spec.stream === "stdout" ? step.stdout ?? "" : step.stderr ?? "";
+  let haystack: string | undefined;
+  if (step.shell) {
+    haystack = spec.stream === "stdout" ? step.shell.stdout : step.shell.stderr;
+  } else if (step.tool) {
+    haystack = spec.stream === "stdout" ? step.tool.stdout : step.tool.stderr;
+  } else {
+    return {
+      ok: false,
+      detail: `step "${spec.stepId}" is not a shell or tool step. step-output-contains needs stdout/stderr.`,
+    };
+  }
   if (haystack.includes(spec.text)) {
     return { ok: true, detail: `${spec.stream} of step "${spec.stepId}" contains "${spec.text}"` };
   }

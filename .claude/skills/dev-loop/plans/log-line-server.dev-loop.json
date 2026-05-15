@@ -1,0 +1,35 @@
+{
+  "schemaVersion": "1",
+  "name": "log-line-server",
+  "description": "Dev-server template that gates readiness on a log line instead of a TCP port. Use this when the server signals readiness through a log message (for example 'READY' or 'Listening on'). Replace command/args/match-pattern/handle-name. Stop later with 'bankai stop <handle-name>'.",
+  "steps": [
+    {
+      "kind": "setup",
+      "id": "boot",
+      "env": "managed-process",
+      "registerAs": "REPLACE-ME-handle-name",
+      "config": {
+        "command": "node",
+        "args": ["server.js"],
+        "cwd": ".",
+        "logFile": ".bankai/logs/REPLACE-ME-handle-name.log",
+        "env": {}
+      },
+      "setupTimeoutMs": 30000
+    },
+    {
+      "kind": "wait",
+      "id": "ready",
+      "fromStepId": "boot",
+      "for": [
+        {
+          "kind": "log-line-matches",
+          "id": "ready-line",
+          "pattern": "READY"
+        }
+      ],
+      "timeoutMs": 30000,
+      "pollIntervalMs": 250
+    }
+  ]
+}

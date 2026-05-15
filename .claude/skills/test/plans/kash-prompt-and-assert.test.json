@@ -1,7 +1,7 @@
 {
   "schemaVersion": "1",
   "name": "kash-prompt-and-assert",
-  "description": "Canonical product-test pattern. A shell step writes a prompt file. A tool step invokes kash with that prompt and writes the response to an out file. An assert-text-contains assertion checks the response. Plan authors typically clone this and adjust the prompt body, the expected substring, and the kash retries.",
+  "description": "Canonical product-test pattern. A shell step writes a prompt file. A tool step invokes kash with that prompt and writes the response to an out file. An assert-text-contains step checks the response. Plan authors typically clone this and adjust the prompt body, the expected substring, and the kash retries.",
   "steps": [
     {
       "kind": "shell",
@@ -27,14 +27,15 @@
         "outFile": "response.txt"
       },
       "timeoutMs": 180000
-    }
-  ],
-  "assertions": [
+    },
     {
-      "kind": "assert-text-contains",
+      "kind": "assert",
       "id": "response-mentions-list-items",
-      "file": "response.txt",
-      "text": "list_items"
+      "assertion": "assert-text-contains",
+      "config": {
+        "file": "response.txt",
+        "text": "list_items"
+      }
     }
   ]
 }

@@ -1,10 +1,10 @@
 ---
 name: test
 description: |
-  Run end-to-end test plans against any repo using the bankai test orchestrator.
+  Run end-to-end test plans against any repo using the bankai orchestrator.
   Each plan is a self-contained, schema-validated JSON file under
   <repo>/.bankai/plans/<name>.test.json. Bankai validates the plan, runs every
-  step, evaluates every assertion, and returns a single JSON envelope. Use when
+  step (including assert steps), and returns a single JSON envelope. Use when
   the user says "/test <name>", "test <name>", "run the <name> test plan", or
   "verify <name> end-to-end". Repo-agnostic.
 metadata:
@@ -15,21 +15,21 @@ metadata:
 
 ## Prime directive
 
-`bankai test run <plan.json>` is the only orchestration entry point. A plan is
-a self-contained, schema-validated JSON file. Your job is to pick the right
+`bankai run <plan.json>` is the only orchestration entry point. A plan is a
+self-contained, schema-validated JSON file. Your job is to pick the right
 plan, run bankai, parse the envelope, and report the result.
 
 No PowerShell wrapper loops. No improvised `Get-Process` health checks. No
-assert-via-grep glue. If a plan needs a step kind that bankai does not have
-yet, add the step kind to bankai under `src/steps/`. Do NOT smuggle
-orchestration logic into the plan itself or into this skill text.
+assert-via-grep glue. If a plan needs a step kind that bankai does not have,
+add it to bankai under `src/steps/`. Do NOT smuggle orchestration logic into
+the plan itself or into this skill text.
 
 ## When to run
 
 - `/test <name>` or `test <name>`
 - "run the <name> test plan", "verify <name> end-to-end"
-- Validation after a code change in a known-tested area, when the user names a
-  plan or a clear plan name can be inferred
+- Validation after a code change in a known-tested area, when the user names
+  a plan or a clear plan name can be inferred
 
 Do NOT run for unit tests (`yarn test`, `npm test`) or pure design questions.
 
@@ -51,76 +51,70 @@ suffix match. Ask if more than one matches.
 ### 2. Run the plan
 
 ```powershell
-bankai test run .bankai\plans\<name>.test.json --json
+bankai run .bankai\plans\<name>.test.json --json
 ```
 
-Stdout is the envelope JSON. The exit code is the truth: `0` on pass, `1` on
-any failure (validation, env setup, step, assertion, env teardown).
+Stdout is the envelope JSON. The exit code is the truth: `0` on pass, `1`
+on any failure (validation, setup, step, assert, teardown).
 
 If `bankai` is not on PATH, fall back to:
 
 ```powershell
-node $env:USERPROFILE\repos\bankai\src\cli.ts test run .bankai\plans\<name>.test.json --json
+node $env:USERPROFILE\repos\bankai\dist\cli.js run .bankai\plans\<name>.test.json --json
 ```
 
 ### 3. Read the envelope
 
-The envelope contract is defined in
-`<bankai>/src/schema/envelope.ts`. Fields that drive the next step:
+The envelope contract is defined in `<bankai>/src/plan/envelope.ts`. Fields
+that drive the next step:
 
-- `ok` — boolean. AND of every step ok and every assertion ok.
-- `failure.stage` — `validation | env-setup | step | assertion | env-teardown`.
+- `ok` — boolean. AND of every step result.
+- `failure.stage` — `load-plan | preflight | setup | step | wait | stop | teardown | internal`.
   Tells you which phase aborted.
-- `failure.id` — the offending step or assertion id.
 - `failure.reason` — human-readable cause.
-- `steps[]` — each has `id`, `kind`, `ok`, `durationMs`, `exitCode?`,
-  `stdout?`, `stderr?`, `error?`. Stop reading after the first `ok: false`
-  step; later steps were skipped.
-- `assertions[]` — each has `id`, `kind`, `ok`, `detail`. Only present when
-  every step passed. If `failure.stage` is `step` then `assertions` is `[]`
-  by design.
+- `steps[]` — each has `id`, `kind`, `ok`, `durationMs`, plus a kind-specific
+  block (`shell`, `tool`, `assert`, `setup`, `wait`, `stop`, `runPlan`).
+- `steps[].shell.stdoutTail` and `stderrTail` are 4 KB tails. The full
+  output lives in the JSONL log file at `envelope.logFile`.
+- The first step with `ok: false` stops the run unless that step had
+  `continueOnFail: true`. Later steps are reported as skipped.
 
 ### 4. Report the result
 
-Always end with a one-line headline plus, on failure, the failing id and
-reason verbatim from `failure.reason`. On pass, the headline is enough.
+Always end with a one-line headline plus, on failure, the failing step id
+and reason verbatim from `failure.reason`. On pass, the headline is enough.
 
 ```text
-PASS  scenario "skills-smoke" (5 steps, 8 assertions, 2.4s)
-FAIL  scenario "skills-smoke" — assertion "site-tools-bound" — file ".bankai/out/tools.txt" does NOT contain "list_items"
+PASS  plan "skills-smoke" (4 steps, 2.4s)
+FAIL  plan "skills-smoke" — step "site-tools-bound" — file ".bankai/out/tools.txt" does NOT contain "list_items"
 ```
 
 ## Plan shape (canonical)
 
 Every plan is a JSON file matching this shape. The full schema lives in
-`<bankai>/src/schema/scenario.ts`. Source of truth is the schema; this
-section is a quick reference.
+`<bankai>/src/plan/schema.ts`. Source of truth is the schema; this section
+is a quick reference.
 
 ```jsonc
 {
   "schemaVersion": "1",
   "name": "skills-smoke",
   "description": "Optional human-readable summary",
-  "environment": {
-    "kind": "noop",
-    "config": {},
-    "setupTimeoutMs": 30000
-  },
   "steps": [
-    /* step refs, executed in order, stop on first failure */
-  ],
-  "assertions": [
-    /* assertion refs. Only evaluated if every step passed.
-       If any step fails, assertions are skipped entirely. */
+    /* StepRefs, executed in order, stop on first failure unless continueOnFail */
   ]
 }
 ```
+
+There is one plan shape and one step list. Assertions are a step kind
+(`assert`), not a separate phase. To see step-by-step pass/fail without
+short-circuiting, set `continueOnFail: true` on each `assert` step.
 
 ### Step kinds (closed)
 
 #### `shell`
 
-Run a short-lived command, capture stdout, stderr, exit code.
+Run a short-lived command, capture stdout, stderr, and exit code.
 
 ```jsonc
 {
@@ -128,14 +122,14 @@ Run a short-lived command, capture stdout, stderr, exit code.
   "id": "build",
   "command": "yarn",
   "args": ["build"],
-  "cwd": "packages/foo",     // optional. relative paths resolve against the plan dir
+  "cwd": "packages/foo",     // optional. relative paths resolve against repoRoot
   "timeoutMs": 60000,         // optional. default 30000
   "expectExitCode": 0          // optional. default 0
 }
 ```
 
-`cwd` always resolves against the directory containing the plan file when
-relative. This makes plans portable. Use absolute paths for cross-repo work.
+`cwd` resolves against the repo root when relative. The repo root is the
+nearest ancestor with `.bankai/`, `.git/`, or `package.json`.
 
 #### `tool`
 
@@ -147,7 +141,7 @@ plugin owns all tactical knowledge for the binary it wraps.
   "kind": "tool",
   "id": "ask-kash",
   "tool": "kash",
-  "config": { /* validated by the plugin's configSchema */ },
+  "config":     { /* validated by the plugin's configSchema */ },
   "invocation": { /* validated by the plugin's invocationSchema */ },
   "cwd": ".",
   "timeoutMs": 90000
@@ -161,59 +155,55 @@ Registered tool plugins:
   `kash refresh` between failed attempts.
   - `invocation`: `{ promptFile: string, outFile: string, subcommand?: string }`.
     Default subcommand is `prompt`. `promptFile` and `outFile` resolve
-    against the plan dir when relative.
+    against the repo root when relative.
   - `config`: `{ binary?, baseArgs?, retries?, refreshOnRetry?, attemptTimeoutMs?, refreshTimeoutMs? }`.
     Production plans usually leave config empty and let discovery find kash
-    on PATH. Tests inject `binary: process.execPath` plus a stand-in JS file.
+    on PATH.
 
-### Assertion kinds (closed)
+#### `assert`
 
-#### `step-output-contains`
+Dispatch to a registered assertion plugin under `<bankai>/src/assertions/`.
+Use `continueOnFail: true` if you want every assertion to report.
 
 ```jsonc
 {
-  "kind": "step-output-contains",
+  "kind": "assert",
   "id": "build-says-success",
-  "stepId": "build",
-  "stream": "stdout",     // or "stderr"
-  "text": "Build succeeded"
+  "assertion": "step-output-contains",
+  "config": {
+    "stepId": "build",
+    "stream": "stdout",     // or "stderr"
+    "text": "Build succeeded"
+  },
+  "continueOnFail": true
 }
 ```
 
-#### `assert-text-contains`
+Registered assertion plugins:
 
-Read a file from disk and assert its contents contain a substring. Use this
-for artifacts your steps write (kash response files, generated reports). The
-file path resolves against the plan dir when relative.
+- **`step-output-contains`** — substring match on a prior shell or tool
+  step's stdout or stderr. Config: `{ stepId, stream, text }`.
+- **`assert-text-contains`** — substring match on a file under repo root.
+  Config: `{ file, text }`. Use this for artifacts steps write to disk.
 
-```jsonc
-{
-  "kind": "assert-text-contains",
-  "id": "response-mentions-tool",
-  "file": "out/response.txt",
-  "text": "list_items"
-}
-```
+#### `setup`, `wait`, `stop`, `run-plan`
 
-### Environments (open)
-
-`environment.kind` defaults to `noop`. Real environments (long-running dev
-servers, hermetic sandboxes) are added by registering an EnvironmentPlugin
-under `<bankai>/src/environments/`. For end-to-end tests against a running
-dev server, the dev server is started by the `dev-loop` skill, not by the
-test environment.
+Used by long-running workflows. See the `dev-loop` skill for full coverage.
+Test plans rarely use these directly; instead they reference a dev server
+the user already started with `dev-loop`.
 
 ## Authoring a new plan
 
 1. Pick a plan name. Kebab-case. The file goes at
    `<repo>/.bankai/plans/<name>.test.json`.
 2. Copy the closest template from `plans/` next to this SKILL.md. Adapt
-   the steps and assertions.
-3. Run it. The envelope is the spec. If a field is wrong, fix the JSON, not
-   the plan output.
-4. If the plan needs a step kind or assertion kind that does not exist, add
-   it to bankai under `src/steps/` or `src/assertions/`. Do NOT shoehorn
-   logic into a `shell` step that another step kind should own.
+   the steps.
+3. Validate it: `bankai doctor --plan .bankai\plans\<name>.test.json`.
+4. Run it: `bankai run .bankai\plans\<name>.test.json --pretty`. The
+   envelope is the spec. If a field is wrong, fix the JSON, not the output.
+5. If a needed step kind, assertion kind, or tool plugin is missing, add it
+   to bankai under `src/steps/`, `src/assertions/`, or `src/tools/`. Do NOT
+   shoehorn logic into a `shell` step that another step kind should own.
 
 ### Quality bar
 
@@ -221,18 +211,17 @@ test environment.
   conversation history. Embed every URL, every flight, every command.
 - **Deterministic verification.** Pass criteria are checkable strings or
   values, not "looks right".
-- **Bounded.** No step should be open-ended. Set `timeoutMs` on long steps.
-- **Cleanup belongs to the env plugin.** If the plan leaves resources behind
-  in `noop`, redesign as a real environment plugin instead of leaking from
-  shell steps.
+- **Bounded.** Set `timeoutMs` on every long step.
+- **Cleanup belongs to setup.** If a plan starts a process, use a `setup`
+  step (scoped, no `registerAs`) so bankai tears it down on plan end.
 
 ## Templates
 
 Bundled inside this skill at `plans/`:
 
 - [`plans/smoke-shell-only.test.json`](plans/smoke-shell-only.test.json) —
-  trivial pass plan: one shell step, one stdout assertion. Use this to verify
-  bankai itself is wired before authoring a real plan.
+  trivial pass plan: one shell step, one step-output assertion. Use this to
+  verify bankai itself is wired before authoring a real plan.
 - [`plans/kash-prompt-and-assert.test.json`](plans/kash-prompt-and-assert.test.json) —
   kash invocation pattern. Reads a prompt file, writes the response, asserts
   on the response file. Most product test plans look like this.
@@ -244,5 +233,5 @@ Bundled inside this skill at `plans/`:
 
 - Does not run unit tests.
 - Does not start dev servers. Use the `dev-loop` skill for that.
-- Does not modify code on a failing scenario. Stop and report.
+- Does not modify code on a failing plan. Stop and report.
 - Does not invent step kinds or assertion kinds. Add them to bankai.

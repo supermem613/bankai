@@ -5,36 +5,25 @@ import { dirname, isAbsolute, resolve } from "node:path";
 import type {
   EnvironmentPlugin,
   LongRunningContext,
-  DevLoopHandle,
   CheckResult,
 } from "./interface.js";
+import type { ProcessHandle } from "../registry/types.js";
 import { registerEnvironment } from "./registry.js";
-import { captureFingerprint } from "../dev-loop/fingerprint.js";
+import { captureFingerprint } from "../fingerprint.js";
 
-// managed-process: a generic spawn-and-track environment plugin for the
-// dev-loop CLI. It owns nothing about a specific framework. A plan that
-// uses this plugin describes the long-running command directly:
+// managed-process: a generic spawn-and-track environment plugin. A
+// `setup` step that names this plugin spawns a long-lived child process
+// described by config:
 //
-//   {
-//     "schemaVersion": "1",
-//     "name": "node-http-server",
-//     "environment": {
-//       "kind": "managed-process",
-//       "config": {
-//         "command": "node",
-//         "args": ["server.js"],
-//         "cwd": ".",
-//         "logFile": ".bankai/logs/node-http-server.log"
-//       }
-//     },
-//     "readiness": [{ "kind": "port", "id": "p", "port": 8080 }]
-//   }
+//   { "kind": "setup", "id": "server", "registerAs": "node-http",
+//     "env": "managed-process",
+//     "config": { "command": "node", "args": ["server.js"], "logFile": "logs/s.log" } }
 //
 // Invariants the next editor must preserve:
 //   1. Spawn is detached on POSIX. The child becomes its own process
 //      group leader so terminateProcessTree(-pid, signal) reaches the
 //      whole subtree on stop. Removing detached:true leaks descendants
-//      and silently breaks dev-loop stop.
+//      and silently breaks bankai stop.
 //   2. The child's stdio is wired to the log file via fds. We open the
 //      log file once, dup the fd into stdout and stderr of the child,
 //      then close OUR copy after spawn so we do not pin the file open
@@ -45,12 +34,11 @@ import { captureFingerprint } from "../dev-loop/fingerprint.js";
 //      previous run that lives earlier in the same file.
 //   4. We child.unref() after spawn so node's event loop does not wait
 //      for the long-lived process. bankai must be free to exit.
-//   5. setup throws on this plugin: managed-process is dev-loop only.
-//      The test runner uses the noop plugin (or a future setup-only
-//      plugin) instead. This separation prevents test scenarios from
-//      accidentally leaking detached processes.
-//   6. NEVER persist the env block in DevLoopHandle. Secrets in env
-//      vars must not leak through state.
+//   5. setup throws on this plugin: managed-process always uses the
+//      detached/long-running surface. A scoped setup step that wants
+//      a scoped helper should use a different plugin.
+//   6. NEVER persist the env block in ProcessHandle. Secrets in env
+//      vars must not leak through the registry.
 
 export const ManagedProcessConfigSchema = z.object({
   command: z.string().min(1),
@@ -113,14 +101,15 @@ export const managedProcessPlugin: EnvironmentPlugin<typeof ManagedProcessConfig
   },
 
   async setup(): Promise<never> {
-    // managed-process intentionally rejects scoped setup. Test scenarios
-    // that need a long-lived helper should compose a separate plugin.
+    // managed-process intentionally rejects scoped setup. A setup step
+    // that uses this plugin must include `registerAs` so the
+    // orchestrator routes through startLongRunning.
     throw new Error(
-      "managed-process is a dev-loop-only environment. Use bankai dev-loop start, not bankai test run.",
+      "managed-process is detached-only. Add `registerAs` to the setup step so the handle persists in the registry.",
     );
   },
 
-  async startLongRunning(ctx: LongRunningContext, config: ManagedProcessConfig): Promise<DevLoopHandle> {
+  async startLongRunning(ctx: LongRunningContext, config: ManagedProcessConfig): Promise<ProcessHandle> {
     const cwdAbs = isAbsolute(config.cwd) ? config.cwd : resolve(ctx.workDir, config.cwd);
     const logFileAbs = await ensureLogPath(cwdAbs, config.logFile);
     const logStartOffset = await getFileSizeOrZero(logFileAbs);
@@ -181,6 +170,7 @@ export const managedProcessPlugin: EnvironmentPlugin<typeof ManagedProcessConfig
       command: config.command,
       args: config.args,
       workDir: cwdAbs,
+      envKind: "managed-process",
       logFile: logFileAbs,
       logStartOffset,
       fingerprint,

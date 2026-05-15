@@ -1,33 +1,12 @@
 import { z } from "zod";
 import { resolve as resolvePath, isAbsolute as isAbsolutePath } from "node:path";
-import { registerStep, type StepContext } from "./registry.js";
+import { registerStep, type StepContext, type StepRunResult } from "./registry.js";
 import { getTool } from "../tools/registry.js";
-import type { BankaiStepResult } from "../schema/envelope.js";
 
-// Tool step kind: closed step kind that dispatches to an OPEN registry of tool
-// plugins under src/tools/. A tool step references a tool by kind, supplies a
-// per-step config and invocation, and lets the tool plugin own all tactical
-// knowledge about the binary it wraps (entrypoint discovery, retry, refresh,
-// argv composition).
-//
-// Invariants the next editor must preserve:
-//   1. The outer schema is closed. spec.config and spec.invocation are
-//      z.unknown at the outer layer and are parsed against the plugin schemas
-//      via superRefine at scenario preflight. This means a typo in tool
-//      config aborts at validation, before any step runs, just like a typo
-//      in shell args.
-//   2. Inner config and invocation are parsed twice on a successful run.
-//      Once during superRefine for fail-fast and once inside run to obtain
-//      the canonical defaulted values. This duplicate parse is intentional.
-//      It is cheap and it keeps the StepHandler generic typing simple.
-//   3. cwd is resolved against ctx.workDir when relative. Same contract as
-//      the shell step. The tool plugin receives the resolved absolute path
-//      via ToolContext.workDir.
-//   4. timeoutMs bounds the WHOLE step including any per-attempt retries the
-//      plugin runs. The plugin's own attemptTimeoutMs is per attempt and
-//      should be smaller than the step timeout if retries are configured.
-//   5. The signal in ToolContext is wired to the step timeout. Plugins MUST
-//      observe abort and stop spawning further attempts when it fires.
+// tool step kind: closed step kind that dispatches to the OPEN registry
+// of tool plugins under src/tools/. The outer schema is closed; only
+// the tool plugin set grows. Inner config and invocation are validated
+// against each plugin's schemas via superRefine at preflight.
 
 export const ToolStepV1Schema = z
   .object({
@@ -38,6 +17,7 @@ export const ToolStepV1Schema = z
     invocation: z.unknown().optional(),
     cwd: z.string().optional(),
     timeoutMs: z.number().int().positive().default(60_000),
+    continueOnFail: z.boolean().optional(),
   })
   .superRefine((spec, ctx) => {
     const plugin = getTool(spec.tool);
@@ -73,20 +53,10 @@ export const ToolStepV1Schema = z
 
 export type ToolStepV1 = z.infer<typeof ToolStepV1Schema>;
 
-async function runToolStep(
-  spec: ToolStepV1,
-  ctx: StepContext,
-): Promise<Omit<BankaiStepResult, "id" | "kind">> {
-  const start = ctx.env.clock.now();
+async function runToolStep(spec: ToolStepV1, ctx: StepContext): Promise<StepRunResult> {
   const plugin = getTool(spec.tool);
   if (!plugin) {
-    return {
-      ok: false,
-      durationMs: ctx.env.clock.now() - start,
-      stdout: "",
-      stderr: "",
-      error: `unknown tool kind: ${spec.tool}`,
-    };
+    return { ok: false, error: `unknown tool kind: ${spec.tool}` };
   }
 
   const config = plugin.configSchema.parse(spec.config ?? {});
@@ -98,7 +68,20 @@ async function runToolStep(
       : resolvePath(ctx.workDir, spec.cwd)
     : ctx.workDir;
 
+  ctx.logger.emit("step.tool.invoke", {
+    stepId: spec.id,
+    tool: spec.tool,
+    cwd: resolvedCwd,
+    timeoutMs: spec.timeoutMs,
+  });
+
   const abortController = new AbortController();
+  const onParentAbort = (): void => abortController.abort(ctx.signal.reason);
+  if (ctx.signal.aborted) {
+    onParentAbort();
+  } else {
+    ctx.signal.addEventListener("abort", onParentAbort, { once: true });
+  }
   const timer = setTimeout(() => {
     abortController.abort(new Error(`tool step timed out after ${spec.timeoutMs}ms`));
   }, spec.timeoutMs);
@@ -108,7 +91,7 @@ async function runToolStep(
       {
         env: ctx.env,
         workDir: resolvedCwd,
-        scenarioName: ctx.scenarioName,
+        planName: ctx.planName,
         signal: abortController.signal,
         timeoutMs: spec.timeoutMs,
       },
@@ -117,22 +100,23 @@ async function runToolStep(
     );
     return {
       ok: result.ok,
-      durationMs: ctx.env.clock.now() - start,
-      exitCode: result.exitCode,
-      stdout: result.stdout,
-      stderr: result.stderr,
       error: result.error,
+      tool: {
+        exitCode: result.exitCode,
+        stdout: result.stdout,
+        stderr: result.stderr,
+        stdoutBytes: Buffer.byteLength(result.stdout, "utf8"),
+        stderrBytes: Buffer.byteLength(result.stderr, "utf8"),
+      },
     };
   } catch (err) {
     return {
       ok: false,
-      durationMs: ctx.env.clock.now() - start,
-      stdout: "",
-      stderr: "",
       error: err instanceof Error ? err.message : String(err),
     };
   } finally {
     clearTimeout(timer);
+    ctx.signal.removeEventListener("abort", onParentAbort);
   }
 }
 

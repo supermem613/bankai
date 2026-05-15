@@ -1,0 +1,23 @@
+{
+  "schemaVersion": "1",
+  "name": "noop",
+  "description": "Smallest possible plan: print Node version, then assert the output starts with v.",
+  "steps": [
+    {
+      "id": "node-version",
+      "kind": "shell",
+      "command": "node",
+      "args": ["-v"]
+    },
+    {
+      "id": "looks-like-version",
+      "kind": "assert",
+      "assertion": "step-output-contains",
+      "config": {
+        "stepId": "node-version",
+        "stream": "stdout",
+        "text": "v"
+      }
+    }
+  ]
+}
