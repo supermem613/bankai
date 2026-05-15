@@ -1,5 +1,11 @@
 node_modules/
 dist/
-.bankai/
 *.tgz
 *.log
+
+# bankai state lives next to the repo per the POR. Plans are committed so a
+# new contributor sees the test surface; state is ephemeral per-run data.
+.bankai/*
+!.bankai/plans/
+!.bankai/plans/**
+

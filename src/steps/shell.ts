@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { spawn } from "node:child_process";
+import { resolve as resolvePath, isAbsolute as isAbsolutePath } from "node:path";
 import { registerStep, type StepContext } from "./_registry.js";
 import type { BankaiStepResult } from "../schema/envelope.js";
 
@@ -13,6 +14,11 @@ import type { BankaiStepResult } from "../schema/envelope.js";
 //      or process.execPath when portability matters.
 //   4. stdout and stderr are captured to memory. A future bytes-cap option
 //      will exist but v1 trusts test scenarios to bound their own output.
+//   5. spec.cwd is interpreted relative to ctx.workDir when relative. This
+//      lets a scenario at .bankai/plans/foo.test.json run a command from the
+//      repo root via cwd: "../..". Without this resolution Node would resolve
+//      against process.cwd which depends on where bankai itself was invoked
+//      from and is not a stable contract.
 
 export const ShellStepV1Schema = z.object({
   kind: z.literal("shell"),
@@ -41,8 +47,14 @@ async function runShell(
       resolve(result);
     };
 
+    const resolvedCwd = spec.cwd
+      ? isAbsolutePath(spec.cwd)
+        ? spec.cwd
+        : resolvePath(ctx.workDir, spec.cwd)
+      : ctx.workDir;
+
     const child = spawn(spec.command, spec.args, {
-      cwd: spec.cwd ?? ctx.workDir,
+      cwd: resolvedCwd,
       shell: false,
       windowsHide: true,
       env: ctx.env.env as NodeJS.ProcessEnv,

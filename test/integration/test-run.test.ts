@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import { strict as assert } from "node:assert";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -161,6 +161,103 @@ describe("bankai test run end-to-end", () => {
       assert.match(envelope.failure?.reason ?? "", /invalid JSON/i);
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("resolves a relative shell step cwd against the scenario directory, not process.cwd", () => {
+    // Regression: the bankai-self-doctor canary surfaced this. Without
+    // resolving spec.cwd against ctx.workDir, Node would resolve a relative
+    // cwd against the process that invoked bankai. That makes scenarios
+    // unportable. The contract is: relative cwd is always relative to the
+    // scenario file's directory.
+    const outer = mkdtempSync(join(tmpdir(), "bankai-it-relcwd-outer-"));
+    try {
+      const scenarioDir = join(outer, "scenarios");
+      const sentinelDir = join(outer, "sibling");
+      mkdirSync(scenarioDir);
+      mkdirSync(sentinelDir);
+      const sentinelPath = join(sentinelDir, "marker.txt");
+      writeFileSync(sentinelPath, "marker contents");
+
+      const scenario = {
+        schemaVersion: "1",
+        name: "relative-cwd",
+        steps: [
+          {
+            kind: "shell",
+            id: "print-cwd",
+            command: process.execPath,
+            args: ["-e", "process.stdout.write(process.cwd())"],
+            cwd: "../sibling",
+            timeoutMs: 10000,
+          },
+        ],
+        assertions: [
+          {
+            kind: "step-output-contains",
+            id: "stdout-is-sibling-dir",
+            stepId: "print-cwd",
+            stream: "stdout",
+            text: "sibling",
+          },
+        ],
+      };
+      const path = join(scenarioDir, "relative-cwd.test.json");
+      writeFileSync(path, JSON.stringify(scenario));
+
+      const { envelope, exitCode } = runCli(path);
+      assert.equal(exitCode, 0, "CLI must exit 0");
+      assert.equal(envelope.ok, true);
+      assert.equal(envelope.steps[0].ok, true);
+      const stdout = envelope.steps[0].stdout ?? "";
+      assert.ok(
+        stdout.endsWith("sibling"),
+        `step cwd should have resolved to <outer>/sibling. stdout was: ${stdout}`,
+      );
+    } finally {
+      rmSync(outer, { recursive: true, force: true });
+    }
+  });
+
+  it("uses an absolute shell step cwd as-is without re-resolving", () => {
+    const outer = mkdtempSync(join(tmpdir(), "bankai-it-abscwd-outer-"));
+    try {
+      const targetDir = join(outer, "target");
+      mkdirSync(targetDir);
+      const path = join(outer, "abs.test.json");
+
+      const scenario = {
+        schemaVersion: "1",
+        name: "absolute-cwd",
+        steps: [
+          {
+            kind: "shell",
+            id: "print-cwd",
+            command: process.execPath,
+            args: ["-e", "process.stdout.write(process.cwd())"],
+            cwd: targetDir,
+            timeoutMs: 10000,
+          },
+        ],
+        assertions: [
+          {
+            kind: "step-output-contains",
+            id: "stdout-is-target",
+            stepId: "print-cwd",
+            stream: "stdout",
+            text: "target",
+          },
+        ],
+      };
+      writeFileSync(path, JSON.stringify(scenario));
+
+      const { envelope, exitCode } = runCli(path);
+      assert.equal(exitCode, 0);
+      assert.equal(envelope.ok, true);
+      const stdout = envelope.steps[0].stdout ?? "";
+      assert.ok(stdout.endsWith("target"), `expected absolute cwd to be honored. stdout was: ${stdout}`);
+    } finally {
+      rmSync(outer, { recursive: true, force: true });
     }
   });
 });

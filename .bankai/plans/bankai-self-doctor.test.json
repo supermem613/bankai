@@ -1,0 +1,47 @@
+{
+  "schemaVersion": "1",
+  "name": "bankai-self-doctor",
+  "description": "Self-test: bankai doctor returns ok and reports the host Node version. This scenario is the canary for the bankai test CLI itself.",
+  "environment": { "kind": "noop" },
+  "steps": [
+    {
+      "kind": "shell",
+      "id": "doctor-json",
+      "command": "node",
+      "args": ["dist/cli.js", "doctor", "--json"],
+      "cwd": "../..",
+      "expectExitCode": 0
+    },
+    {
+      "kind": "shell",
+      "id": "doctor-human",
+      "command": "node",
+      "args": ["dist/cli.js", "doctor"],
+      "cwd": "../..",
+      "expectExitCode": 0
+    }
+  ],
+  "assertions": [
+    {
+      "kind": "step-output-contains",
+      "id": "json-shows-ok-true",
+      "stepId": "doctor-json",
+      "stream": "stdout",
+      "text": "\"ok\": true"
+    },
+    {
+      "kind": "step-output-contains",
+      "id": "json-reports-node-check",
+      "stepId": "doctor-json",
+      "stream": "stdout",
+      "text": "\"name\": \"node\""
+    },
+    {
+      "kind": "step-output-contains",
+      "id": "human-shows-all-checks-passed",
+      "stepId": "doctor-human",
+      "stream": "stdout",
+      "text": "All checks passed"
+    }
+  ]
+}
