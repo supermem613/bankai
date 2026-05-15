@@ -1,6 +1,6 @@
 {
   "name": "bankai",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Reliable orchestration engine for dev-loop and test plan execution with environment plugins",
   "type": "module",
   "bin": {
