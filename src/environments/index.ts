@@ -3,3 +3,4 @@
 // here. There is intentionally no runtime discovery so the registered set is
 // auditable from this file alone.
 import "./noop.js";
+import "./managed-process.js";

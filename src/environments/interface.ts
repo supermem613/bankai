@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { Env } from "../env-runtime/env.js";
 import type { LifecycleScope } from "./lifecycle-scope.js";
+import type { ProcessFingerprint } from "../dev-loop/envelope.js";
 
 // EnvironmentPlugin: the open extension point for the bankai engine. While
 // step kinds and assertion kinds are intentionally closed, an environment
@@ -22,6 +23,15 @@ import type { LifecycleScope } from "./lifecycle-scope.js";
 //      not expose raw process handles. Expose ports, endpoints, file paths
 //      and similar values instead. This keeps the closed step registry from
 //      reaching into env internals.
+//   5. startLongRunning is OPTIONAL. Plugins that participate in the
+//      bankai dev-loop CLI implement it; plugins that only support the
+//      test runner do not. The dev-loop orchestrator refuses to start a
+//      plan whose environment kind has no startLongRunning. The split
+//      between setup (scoped lifecycle, child attached to LifecycleScope)
+//      and startLongRunning (orphaned-from-bankai lifecycle, persistent
+//      handle returned for later stop) keeps the two surfaces from
+//      stepping on each other. A plugin that wants to support both
+//      implements both methods.
 
 export interface CheckResult {
   name: string;
@@ -50,7 +60,26 @@ export interface EnvironmentPlugin<
 > {
   kind: string;
   configSchema: C;
-  doctor(env: Env): Promise<CheckResult[]>;
+  doctor(env: Env, config?: z.infer<C>): Promise<CheckResult[]>;
   doctorLive?(env: Env, config: z.infer<C>): Promise<CheckResult[]>;
   setup(ctx: EnvironmentContext, config: z.infer<C>): Promise<EnvironmentHandle<Caps>>;
+  startLongRunning?(ctx: LongRunningContext, config: z.infer<C>): Promise<DevLoopHandle>;
+}
+
+export interface LongRunningContext {
+  env: Env;
+  workDir: string;
+  planName: string;
+  signal: AbortSignal;
+  timeoutMs: number;
+}
+
+export interface DevLoopHandle {
+  pid: number;
+  command: string;
+  args: string[];
+  workDir: string;
+  logFile: string;
+  logStartOffset: number;
+  fingerprint?: ProcessFingerprint;
 }
