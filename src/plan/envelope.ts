@@ -122,7 +122,7 @@ export type BankaiStepResult = z.infer<typeof BankaiStepResultSchema>;
 
 export const BankaiEnvelopeSchema = z.object({
   ok: z.boolean(),
-  command: z.enum(["run", "status", "logs", "stop", "doctor"]),
+  command: z.enum(["run", "status", "logs", "stop", "doctor", "update"]),
   startedAt: z.string().min(1),
   finishedAt: z.string().min(1),
   durationMs: z.number().int().nonnegative(),

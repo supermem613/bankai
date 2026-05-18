@@ -20,6 +20,8 @@ Bankai requires Node.js 24 or newer.
   product-specific integrations.
 - Update README, bundled skills, and `.audit-repo.yaml` when the public CLI
   surface changes.
+- Keep `bankai update` envelope-first. It should not print progress prose that
+  agents need to parse.
 
 ## Pull requests
 

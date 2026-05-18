@@ -39,11 +39,12 @@ JSON envelope for success, failure, timing, and logs.
 - *"Prune stale runtime handles before starting a new loop"*
 - *"Return structured failure details that an agent can route on without parsing
   terminal prose"*
+- *"Update this Bankai checkout and rebuild only if new changes arrived"*
 
 ## Quick start
 
 ```bash
-git clone https://github.com/marcusm_microsoft/bankai.git ~/repos/bankai
+git clone https://github.com/supermem613/bankai.git ~/repos/bankai
 cd ~/repos/bankai
 npm install
 npm run build
@@ -61,6 +62,8 @@ npm link    # makes `bankai` available globally
   Ctrl+C control path and verify tracked processes exit before clearing state.
 - `doctor` - run health checks, validate an optional plan, and prune stale
   registry state with `--prune`.
+- `update` - self-update this Bankai git checkout with `git pull --ff-only`,
+  dependency install, and rebuild when changes arrive.
 - `schema` - print the JSON shape for plans or bindings.
 
 Bankai emits JSON envelopes by default. `--json` remains accepted as a

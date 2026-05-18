@@ -52,6 +52,7 @@ bankai status [name]
 bankai logs [name]
 bankai stop <name>
 bankai doctor [--plan <path>] [--prune]
+bankai update
 bankai schema plan|bindings
 ```
 
@@ -103,3 +104,4 @@ tracked descendants when needed.
 - *"Validate this generated plan before running it"*
 - *"Run this smoke test plan and report the failing step id and reason"*
 - *"Generate bindings JSON for the workspace path and run the plan with it"*
+- *"Update this Bankai checkout and rebuild only if new changes arrived"*

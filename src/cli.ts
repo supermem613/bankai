@@ -22,6 +22,7 @@ import { getStatusRegistryEntries, runStatusCommand } from "./commands/status.js
 import { runLogsCommand } from "./commands/logs.js";
 import { runStopCommand } from "./commands/stop.js";
 import { runDoctorCommand } from "./commands/doctor.js";
+import { runUpdateCommand } from "./commands/update.js";
 import { emitEnvelope } from "./commands/format.js";
 import { schemaDocument, type SchemaKind } from "./commands/schema.js";
 import { createNodeEnv } from "./env-runtime/env.js";
@@ -274,6 +275,22 @@ program
     const envelope = await runDoctorCommand({
       planPath: opts.plan as string | undefined,
       prune: opts.prune === true,
+      logDir: opts.logDir as string | undefined,
+      logFile: opts.logFile as string | undefined,
+    });
+    emitEnvelope(opts as { json?: boolean; out?: string }, envelope);
+    process.exit(envelope.ok ? 0 : 1);
+  });
+
+program
+  .command("update")
+  .description("Self-update this Bankai git checkout")
+  .option("--log-dir <path>", "directory to write the JSONL run log into")
+  .option("--log-file <path>", "explicit log file path")
+  .option("--json", "deprecated no-op; JSON is always emitted")
+  .option("--out <path>", "also write the envelope JSON to this path")
+  .action(async (opts: Record<string, unknown>) => {
+    const envelope = await runUpdateCommand({
       logDir: opts.logDir as string | undefined,
       logFile: opts.logFile as string | undefined,
     });

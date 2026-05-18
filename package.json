@@ -39,12 +39,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/marcusm_microsoft/bankai.git"
+    "url": "git+https://github.com/supermem613/bankai.git"
   },
   "bugs": {
-    "url": "https://github.com/marcusm_microsoft/bankai/issues"
+    "url": "https://github.com/supermem613/bankai/issues"
   },
-  "homepage": "https://github.com/marcusm_microsoft/bankai#readme",
+  "homepage": "https://github.com/supermem613/bankai#readme",
   "engines": {
     "node": ">=24.0.0"
   },
