@@ -34,6 +34,7 @@ export const WaitStepV1Schema = z
     timeoutMs: z.number().int().positive().default(15_000),
     pollIntervalMs: z.number().int().positive().default(250),
     continueOnFail: z.boolean().optional(),
+    alwaysRun: z.boolean().optional(),
   })
   .strict()
   .superRefine((spec, ctx) => {

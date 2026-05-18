@@ -27,6 +27,7 @@ export const RunPlanStepV1Schema = z.object({
   id: z.string().min(1),
   plan: z.string().min(1),
   continueOnFail: z.boolean().optional(),
+  alwaysRun: z.boolean().optional(),
 }).strict();
 
 export type RunPlanStepV1 = z.infer<typeof RunPlanStepV1Schema>;

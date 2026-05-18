@@ -6,6 +6,7 @@ import { getStatusRegistryEntries } from "./status.js";
 import { loadPlan } from "../plan/load.js";
 import { runPlan } from "../orchestrator/run.js";
 import type { BankaiEnvelope } from "../plan/envelope.js";
+import { dirname, join } from "node:path";
 import {
   type BindingEntry,
   parseBindingsJson,
@@ -105,7 +106,10 @@ export async function runRunCommand(opts: RunCommandOptions): Promise<BankaiEnve
     return envelope;
   }
 
-  const resolvedBindings = resolveBindings(loaded.plan.requires, suppliedBindings.bindings);
+  const resolvedBindings = resolveBindings(loaded.plan.requires, [
+    ...automaticBindings({ env, repoRoot, planPath: loaded.planPath, logger }),
+    ...suppliedBindings.bindings,
+  ]);
   if (!resolvedBindings.ok) {
     const finishedAt = env.clock.isoNow();
     const envelope: BankaiEnvelope = {
@@ -162,6 +166,16 @@ export async function runRunCommand(opts: RunCommandOptions): Promise<BankaiEnve
     await logger.close();
   }
   return envelope;
+}
+
+function automaticBindings(opts: { env: Env; repoRoot: string; planPath: string; logger: RunLogger }): BindingEntry[] {
+  return [
+    { key: "bankaiRunId", value: opts.logger.runId },
+    { key: "bankaiLogFile", value: opts.logger.logFilePath },
+    { key: "bankaiOutputDir", value: join(opts.env.home, ".bankai", "out", opts.logger.runId) },
+    { key: "bankaiPlanDir", value: dirname(opts.planPath) },
+    { key: "bankaiWorkDir", value: opts.repoRoot },
+  ];
 }
 
 function registeredNames(steps: readonly unknown[]): string[] {

@@ -50,6 +50,7 @@ export const StepRefSchema = z
     id: z.string().min(1),
     kind: z.string().min(1),
     continueOnFail: z.boolean().optional(),
+    alwaysRun: z.boolean().optional(),
   })
   .passthrough()
   .superRefine((step, ctx) => {

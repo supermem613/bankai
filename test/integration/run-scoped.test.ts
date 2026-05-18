@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runRunCommand } from "../../src/commands/run.js";
 import { createNodeEnv } from "../../src/env-runtime/env.js";
+import { isProcessAlive } from "../../src/process-tree.js";
 
 // Side-effect imports register the built-in step kinds, env plugins,
 // tool plugins, assertions, and readiness probes for tests that exercise
@@ -25,6 +26,19 @@ describe("orchestrator: scoped plans", () => {
   afterEach(() => {
     rmSync(tmp, { recursive: true, force: true });
   });
+
+  function killPidIfAlive(pid: number): void {
+    if (!isProcessAlive(pid)) {
+      return;
+    }
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ESRCH") {
+        throw err;
+      }
+    }
+  }
 
   it("runs a shell + assert plan and reports ok", async () => {
     const planPath = join(tmp, "p.plan.json");
@@ -140,6 +154,107 @@ describe("orchestrator: scoped plans", () => {
     assert.equal(readFileSync(marker, "utf8"), "2");
   });
 
+  it("times out shell steps by terminating the spawned process tree", async () => {
+    const planPath = join(tmp, "p.plan.json");
+    const childPidFile = join(tmp, "child-pid.txt");
+    writeFileSync(
+      planPath,
+      JSON.stringify({
+        schemaVersion: "1",
+        name: "timeout-shell-tree",
+        steps: [
+          {
+            id: "hang",
+            kind: "shell",
+            command: process.execPath,
+            args: [
+              "-e",
+              [
+                "const { spawn } = require('node:child_process')",
+                "const fs = require('node:fs')",
+                "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' })",
+                `fs.writeFileSync(${JSON.stringify(childPidFile)}, String(child.pid))`,
+                "setInterval(() => {}, 1000)",
+              ].join("; "),
+            ],
+            timeoutMs: 500,
+          },
+        ],
+      }),
+    );
+
+    const envelope = await runRunCommand({ planPath, env: createNodeEnv(), logDir: join(tmp, "logs"), repoRoot: tmp });
+
+    assert.equal(envelope.ok, false);
+    assert.match(envelope.steps[0].error ?? "", /timed out after 500ms/);
+    const childPid = Number(readFileSync(childPidFile, "utf8"));
+    assert.equal(isProcessAlive(childPid), false, `child pid ${childPid} should have been killed`);
+  });
+
+  it("finishes when the root shell exits even if a descendant keeps stdio handles open", async () => {
+    const planPath = join(tmp, "p.plan.json");
+    const childPidFile = join(tmp, "stdio-child-pid.txt");
+    writeFileSync(
+      planPath,
+      JSON.stringify({
+        schemaVersion: "1",
+        name: "root-exit-open-stdio",
+        steps: [
+          {
+            id: "root",
+            kind: "shell",
+            command: process.execPath,
+            args: [
+              "-e",
+              [
+                "const { spawn } = require('node:child_process')",
+                "const fs = require('node:fs')",
+                "const child = spawn(process.execPath, ['-e', 'setInterval(() => console.log(\"child noise\"), 10)'], { cwd: require('node:os').tmpdir(), detached: true, stdio: ['ignore', 'inherit', 'inherit'] })",
+                `fs.writeFileSync(${JSON.stringify(childPidFile)}, String(child.pid))`,
+                "child.unref()",
+                "console.log('root done')",
+              ].join("; "),
+            ],
+            timeoutMs: 5000,
+          },
+        ],
+      }),
+    );
+
+    const envelope = await runRunCommand({ planPath, env: createNodeEnv(), logDir: join(tmp, "logs"), repoRoot: tmp });
+    const childPid = Number(readFileSync(childPidFile, "utf8"));
+
+    killPidIfAlive(childPid);
+    assert.equal(envelope.ok, true, JSON.stringify(envelope.failure));
+    assert.match(envelope.steps[0].shell?.stdoutTail ?? "", /root done/);
+  });
+
+  it("bounds shell capture for output that never emits a newline", async () => {
+    const planPath = join(tmp, "p.plan.json");
+    writeFileSync(
+      planPath,
+      JSON.stringify({
+        schemaVersion: "1",
+        name: "no-newline-output",
+        steps: [
+          {
+            id: "root",
+            kind: "shell",
+            command: process.execPath,
+            args: ["-e", "process.stdout.write('x'.repeat(200000))"],
+            maxBufferBytes: 1024,
+          },
+        ],
+      }),
+    );
+
+    const envelope = await runRunCommand({ planPath, env: createNodeEnv(), logDir: join(tmp, "logs"), repoRoot: tmp });
+
+    assert.equal(envelope.ok, true, JSON.stringify(envelope.failure));
+    assert.equal(envelope.steps[0].shell?.stdoutBytes, 200000);
+    assert.equal(envelope.steps[0].shell?.stdoutTail.length, 1024);
+  });
+
   it("writes a JSONL log next to the run with all step boundaries", async () => {
     const planPath = join(tmp, "p.plan.json");
     writeFileSync(
@@ -247,6 +362,86 @@ describe("orchestrator: scoped plans", () => {
     });
     assert.equal(envelope.ok, true, JSON.stringify(envelope.failure));
     assert.equal(envelope.steps[0].shell?.stdoutTail.trim(), workspace);
+  });
+
+  it("supports generic CLI args, write-file, JSON assertions, and always-run cleanup", async () => {
+    const workspace = join(tmp, "workspace");
+    mkdirSync(workspace);
+    const planPath = join(tmp, "p.plan.json");
+    writeFileSync(
+      planPath,
+      JSON.stringify({
+        schemaVersion: "1",
+        name: "generic-test-flow",
+        requires: {
+          bindings: {
+            workspace: { type: "path", required: true },
+            siteUrl: { type: "url", required: true },
+          },
+        },
+        steps: [
+          {
+            id: "write-prompt",
+            kind: "write-file",
+            file: { binding: "bankaiOutputDir", path: "prompt.txt" },
+            content: "hello from prompt {{siteUrl}}",
+          },
+          {
+            id: "fake-cli",
+            kind: "shell",
+            command: process.execPath,
+            stdoutFile: { binding: "bankaiOutputDir", path: "response.json" },
+            args: [
+              "-e",
+              "process.stdout.write(JSON.stringify({text:'hello from json '+process.argv[1], toolDetails:[{toolName:'set_context_file', success:true}]}));",
+              { fileText: { binding: "bankaiOutputDir", path: "prompt.txt" } },
+            ],
+          },
+          {
+            id: "assert-tool",
+            kind: "assert",
+            assertion: "assert-json",
+            config: {
+              file: { binding: "bankaiOutputDir", path: "response.json" },
+              path: ["toolDetails"],
+              arrayContainsObject: { toolName: "set_context_file", success: true },
+            },
+          },
+          {
+            id: "fail",
+            kind: "shell",
+            command: process.execPath,
+            args: ["-e", "process.exit(9)"],
+          },
+          {
+            id: "cleanup",
+            kind: "write-file",
+            file: { binding: "workspace", path: "cleanup.txt" },
+            content: "cleanup ran",
+            alwaysRun: true,
+          },
+        ],
+      }),
+    );
+
+    const envelope = await runRunCommand({
+      planPath,
+      env: createNodeEnv(),
+      logDir: join(tmp, "logs"),
+      repoRoot: tmp,
+      bindingsJson: JSON.stringify([
+        { key: "workspace", value: workspace },
+        { key: "siteUrl", value: "https://example.test/site" },
+      ]),
+    });
+
+    assert.equal(envelope.ok, false);
+    assert.equal(envelope.steps.at(-1)?.id, "cleanup");
+    assert.match(envelope.steps.find((step) => step.id === "fake-cli")?.shell?.stdoutFile ?? "", /response\.json$/);
+    const promptFile = envelope.steps.find((step) => step.id === "write-prompt")?.writeFile?.file;
+    assert.equal(promptFile !== undefined ? readFileSync(promptFile, "utf8") : "", "hello from prompt https://example.test/site");
+    assert.equal(readFileSync(join(workspace, "cleanup.txt"), "utf8"), "cleanup ran");
+    assert.equal(envelope.steps.some((step) => step.id === "assert-tool" && step.ok), true);
   });
 
   it("composes sub-plans with run-plan", async () => {

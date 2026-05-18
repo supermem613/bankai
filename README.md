@@ -25,6 +25,8 @@ JSON envelope for success, failure, timing, and logs.
 - *"Run the smoke test plan and give me the failing step if anything breaks"*
 - *"Run this external CLI, capture its JSON output, and assert the response
   contains the expected text"*
+- *"Write a prompt file into the run output folder, pass it to a CLI, and assert
+  the JSON artifact it produced"*
 - *"Validate this plan before running it so typos in step kinds or readiness
   probes fail up front"*
 - *"Compose a setup plan and a test plan while preserving one envelope for the
@@ -68,8 +70,27 @@ npm link    # makes `bankai` available globally
 - `schema` - print the Bankai command surface by default. Use `schema plan` or
   `schema bindings` for plan-authoring internals.
 
-Bankai emits JSON envelopes by default. `--json` remains accepted as a
-deprecated compatibility no-op.
+Bankai emits JSON envelopes by default.
+
+## Plan primitives for CLI tests
+
+Plans can drive arbitrary CLIs with generic steps instead of product-specific
+workflow code:
+
+- `shell` runs a command with schema-checked args. Args can reference bindings
+  with `{ "binding": "name" }`, bound paths with `{ "binding": "name",
+  "path": "file.json" }`, or string templates like `{{bankaiRunId}}`.
+- `write-file` writes bounded UTF-8 text to a relative path or bound path.
+  Content can use the same `{{bindingName}}` templates.
+- `assert-json` reads a JSON file and checks path existence, scalar equality,
+  text contains/not-contains, regex, or array object membership.
+- `assert-text` reads a text file and checks contains/not-contains/regex.
+- `alwaysRun` can be set on cleanup steps so they still execute after an
+  earlier step fails.
+
+`bankai run` injects reserved automatic bindings for generated artifacts:
+`bankaiRunId`, `bankaiLogFile`, `bankaiOutputDir`, `bankaiPlanDir`, and
+`bankaiWorkDir`.
 
 ## Agentic contract
 

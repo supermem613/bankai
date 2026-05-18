@@ -54,7 +54,7 @@ suffix match. Ask if more than one matches.
 ### 2. Run the plan
 
 ```powershell
-bankai run $planPath --json
+bankai run $planPath
 ```
 
 Stdout is the envelope JSON. The exit code is the truth: `0` on pass, `1`
@@ -208,8 +208,8 @@ the user already started with `dev-loop`.
    `plans\<name>.test.json` next to this SKILL.md.
 2. Copy the closest template from `plans/` next to this SKILL.md. Adapt
    the steps.
-3. Validate it: `bankai doctor --plan $planPath --json`.
-4. Run it: `bankai run $planPath --json`. The
+3. Validate it: `bankai doctor --plan $planPath`.
+4. Run it: `bankai run $planPath`. The
    envelope is the spec. If a field is wrong, fix the JSON, not the output.
 5. If a needed step kind or assertion kind is missing, add it to bankai under
    `src/steps/` or `src/assertions/`. Keep project-specific CLIs in plans unless

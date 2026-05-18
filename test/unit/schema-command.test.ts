@@ -4,7 +4,7 @@ import { normalizeSchemaKind, schemaDocument } from "../../src/commands/schema.j
 
 describe("schema command", () => {
   it("defaults to the Bankai command surface", () => {
-    const doc = schemaDocument() as { commands?: Array<{ name: string; usage: string }> };
+    const doc = schemaDocument() as { commands?: Array<{ name: string; usage: string; options?: Array<{ name: string }> }> };
 
     assert.deepEqual(doc.commands?.map((command) => command.name), [
       "run",
@@ -16,6 +16,7 @@ describe("schema command", () => {
       "schema",
     ]);
     assert.ok(doc.commands?.some((command) => command.usage === "bankai schema [commands|plan|bindings]"));
+    assert.ok(doc.commands?.every((command) => !command.options?.some((option) => option.name.startsWith("--json"))));
   });
 
   it("keeps plan and bindings schemas available by explicit kind", () => {

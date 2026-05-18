@@ -57,8 +57,6 @@ bankai update
 bankai schema [commands|plan|bindings]
 ```
 
-`--json` is accepted for compatibility, but JSON is the default output format.
-
 ## Dev-loop lifecycle
 
 For attached dev loops, `bankai run <plan>` is the startup proof. It blocks
@@ -94,6 +92,12 @@ tracked descendants when needed.
 - Put readiness and failure detection in the plan, not in agent-side polling.
 - Use explicit timeouts for long-running steps.
 - Prefer generic steps and assertions over product-specific plugins.
+- Use `shell`, `write-file`, `assert-json`, and `assert-text` for CLI-backed
+  tests before adding a new product-specific primitive.
+- Use automatic bindings such as `bankaiOutputDir`, `bankaiRunId`, and
+  `bankaiLogFile` for generated artifacts and run-scoped sentinels.
+- Mark cleanup steps with `alwaysRun` when they must execute after a prior
+  failure.
 - Keep secrets out of plans, registry entries, logs, and assertions.
 
 ## Agent prompts Bankai should handle

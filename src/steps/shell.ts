@@ -1,11 +1,12 @@
 import { z } from "zod";
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
-import { createInterface } from "node:readline";
-import { delimiter, join } from "node:path";
+import { createWriteStream, existsSync, readFileSync, statSync } from "node:fs";
+import { mkdir } from "node:fs/promises";
+import { delimiter, dirname, join } from "node:path";
 import { registerStep, type StepContext, type StepRunResult } from "./registry.js";
-import { BindingPathRefSchema, resolveBindingPath } from "../bindings.js";
+import { BindingPathRefSchema, BindingValueRefSchema, interpolateBindings, resolveBindingPath, resolveBindingValueRef } from "../bindings.js";
 import type { Env } from "../env-runtime/env.js";
+import { terminateProcessTree } from "../process-tree.js";
 
 // shell step kind: spawn a single short-lived command, capture stdout
 // and stderr to memory and stream them line-by-line into the JSONL
@@ -30,14 +31,24 @@ import type { Env } from "../env-runtime/env.js";
 //      for human envelopes; the JSONL log carries the full content.
 
 const DEFAULT_BUFFER_BYTES = 1_048_576;
+const DEFAULT_ARG_FILE_BYTES = 1_048_576;
+const SHELL_TERMINATE_GRACE_MS = 2_000;
+const MAX_LOG_LINE_CHARS = 16_384;
+
+const ShellArgFileTextSchema = z.object({
+  fileText: BindingPathRefSchema,
+}).strict();
+
+const ShellArgSchema = z.union([z.string(), z.number(), z.boolean(), ShellArgFileTextSchema, BindingValueRefSchema]);
 
 export const ShellStepV1Schema = z.object({
   kind: z.literal("shell"),
   id: z.string().min(1),
   command: z.string().min(1),
-  args: z.array(z.string()).default([]),
+  args: z.array(ShellArgSchema).default([]),
   resolveCommand: z.boolean().default(true),
   cwd: BindingPathRefSchema.optional(),
+  stdoutFile: BindingPathRefSchema.optional(),
   timeoutMs: z.number().int().positive().default(30_000),
   expectExitCode: z.number().int().default(0),
   retries: z.number().int().min(0).max(5).default(0),
@@ -45,6 +56,7 @@ export const ShellStepV1Schema = z.object({
   /** Optional environment variables merged into the spawn env. NEVER persisted in step results or registry. */
   env: z.record(z.string(), z.string()).optional(),
   continueOnFail: z.boolean().optional(),
+  alwaysRun: z.boolean().optional(),
 }).strict();
 
 export type ShellStepV1 = z.infer<typeof ShellStepV1Schema>;
@@ -80,14 +92,31 @@ function quoteCmdArg(value: string): string {
   return `"${value.replace(/"/g, '""')}"`;
 }
 
-export function resolveShellCommand(spec: ShellStepV1, env: Env): ResolvedShellCommand {
+function resolveShellArgs(spec: ShellStepV1, ctx: StepContext): string[] {
+  return spec.args.map((arg) => {
+    if (typeof arg === "object") {
+      if ("fileText" in arg) {
+        const file = resolveBindingPath(arg.fileText, { workDir: ctx.workDir, bindings: ctx.bindings });
+        const size = statSync(file).size;
+        if (size > DEFAULT_ARG_FILE_BYTES) {
+          throw new Error(`arg file "${file}" exceeds ${DEFAULT_ARG_FILE_BYTES} bytes`);
+        }
+        return readFileSync(file, "utf8");
+      }
+      return resolveBindingValueRef(arg, { workDir: ctx.workDir, bindings: ctx.bindings });
+    }
+    return typeof arg === "string" ? interpolateBindings(arg, { bindings: ctx.bindings }) : String(arg);
+  });
+}
+
+export function resolveShellCommand(spec: ShellStepV1, env: Env, args: string[] = spec.args.map(String)): ResolvedShellCommand {
   if (!spec.resolveCommand) {
-    return { command: spec.command, args: spec.args, detail: spec.command };
+    return { command: spec.command, args, detail: spec.command };
   }
   const discovered = findOnPath(env, spec.command) ?? spec.command;
   if (env.platform === "win32" && discovered.toLowerCase().endsWith(".cmd") && existsSync(discovered)) {
     const cmd = env.env.ComSpec ?? env.env.COMSPEC ?? "cmd.exe";
-    const commandLine = [quoteCmdArg(discovered), ...spec.args.map(quoteCmdArg)].join(" ");
+    const commandLine = [quoteCmdArg(discovered), ...args.map(quoteCmdArg)].join(" ");
     return {
       command: cmd,
       args: ["/d", "/s", "/c", `"${commandLine}"`],
@@ -95,11 +124,17 @@ export function resolveShellCommand(spec: ShellStepV1, env: Env): ResolvedShellC
       windowsVerbatimArguments: true,
     };
   }
-  return { command: discovered, args: spec.args, detail: discovered };
+  return { command: discovered, args, detail: discovered };
 }
 
 async function runShellAttempt(spec: ShellStepV1, ctx: StepContext, resolvedCwd: string, attempt: number): Promise<StepRunResult> {
-  const resolvedCommand = resolveShellCommand(spec, ctx.env);
+  const resolvedCommand = resolveShellCommand(spec, ctx.env, resolveShellArgs(spec, ctx));
+  const stdoutFile = spec.stdoutFile
+    ? resolveBindingPath(spec.stdoutFile, { workDir: ctx.workDir, bindings: ctx.bindings })
+    : undefined;
+  if (stdoutFile) {
+    await mkdir(dirname(stdoutFile), { recursive: true });
+  }
   ctx.logger.emit("step.shell.spawn", {
     stepId: spec.id,
     command: resolvedCommand.command,
@@ -107,6 +142,7 @@ async function runShellAttempt(spec: ShellStepV1, ctx: StepContext, resolvedCwd:
     requestedCommand: spec.command,
     resolvedCommand: resolvedCommand.detail,
     cwd: resolvedCwd,
+    stdoutFile,
     timeoutMs: spec.timeoutMs,
     expectExitCode: spec.expectExitCode,
     attempt,
@@ -124,6 +160,7 @@ async function runShellAttempt(spec: ShellStepV1, ctx: StepContext, resolvedCwd:
 
     const child = spawn(resolvedCommand.command, resolvedCommand.args, {
       cwd: resolvedCwd,
+      detached: ctx.env.platform !== "win32",
       shell: false,
       windowsHide: true,
       windowsVerbatimArguments: resolvedCommand.windowsVerbatimArguments,
@@ -134,36 +171,118 @@ async function runShellAttempt(spec: ShellStepV1, ctx: StepContext, resolvedCwd:
     let stderrBuf = "";
     let stdoutBytes = 0;
     let stderrBytes = 0;
+    let pendingStdoutLine = "";
+    let pendingStderrLine = "";
+    let stdoutFileError: string | undefined;
+    const stdoutFileStream = stdoutFile ? createWriteStream(stdoutFile, { encoding: "utf8" }) : undefined;
+    stdoutFileStream?.on("error", (err) => {
+      stdoutFileError = err.message;
+    });
+
+    const appendBounded = (current: string, text: string): string => {
+      if (current.length >= spec.maxBufferBytes) {
+        return current;
+      }
+      const next = current + text;
+      return next.length > spec.maxBufferBytes ? next.slice(0, spec.maxBufferBytes) : next;
+    };
+    const emitStreamLines = (stream: "stdout" | "stderr", pending: string, text: string): string => {
+      let next = pending + text;
+      let newline = next.indexOf("\n");
+      while (newline !== -1) {
+        const rawLine = next.slice(0, newline);
+        const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+        ctx.logger.emit(`step.shell.${stream}`, { stepId: spec.id, line });
+        next = next.slice(newline + 1);
+        newline = next.indexOf("\n");
+      }
+      while (next.length > MAX_LOG_LINE_CHARS) {
+        ctx.logger.emit(`step.shell.${stream}`, {
+          stepId: spec.id,
+          line: next.slice(0, MAX_LOG_LINE_CHARS),
+          partial: true,
+        });
+        next = next.slice(MAX_LOG_LINE_CHARS);
+      }
+      return next;
+    };
+    const flushPendingLine = (stream: "stdout" | "stderr", pending: string): void => {
+      if (pending.length === 0) {
+        return;
+      }
+      ctx.logger.emit(`step.shell.${stream}`, { stepId: spec.id, line: pending });
+    };
 
     if (child.stdout) {
-      const rl = createInterface({ input: child.stdout, crlfDelay: Infinity });
-      rl.on("line", (line) => {
-        stdoutBytes += Buffer.byteLength(line, "utf8") + 1;
-        if (stdoutBuf.length < spec.maxBufferBytes) {
-          stdoutBuf += line + "\n";
-          if (stdoutBuf.length > spec.maxBufferBytes) {
-            stdoutBuf = stdoutBuf.slice(0, spec.maxBufferBytes);
-          }
-        }
-        ctx.logger.emit("step.shell.stdout", { stepId: spec.id, line });
+      child.stdout.on("data", (chunk: Buffer | string) => {
+        stdoutFileStream?.write(chunk);
+        const text = chunk.toString();
+        stdoutBytes += Buffer.byteLength(text, "utf8");
+        stdoutBuf = appendBounded(stdoutBuf, text);
+        pendingStdoutLine = emitStreamLines("stdout", pendingStdoutLine, text);
       });
     }
     if (child.stderr) {
-      const rl = createInterface({ input: child.stderr, crlfDelay: Infinity });
-      rl.on("line", (line) => {
-        stderrBytes += Buffer.byteLength(line, "utf8") + 1;
-        if (stderrBuf.length < spec.maxBufferBytes) {
-          stderrBuf += line + "\n";
-          if (stderrBuf.length > spec.maxBufferBytes) {
-            stderrBuf = stderrBuf.slice(0, spec.maxBufferBytes);
-          }
-        }
-        ctx.logger.emit("step.shell.stderr", { stepId: spec.id, line });
+      child.stderr.on("data", (chunk: Buffer | string) => {
+        const text = chunk.toString();
+        stderrBytes += Buffer.byteLength(text, "utf8");
+        stderrBuf = appendBounded(stderrBuf, text);
+        pendingStderrLine = emitStreamLines("stderr", pendingStderrLine, text);
       });
     }
 
+    const closeCapturedStreams = (): void => {
+      flushPendingLine("stdout", pendingStdoutLine);
+      flushPendingLine("stderr", pendingStderrLine);
+      pendingStdoutLine = "";
+      pendingStderrLine = "";
+      child.stdout?.removeAllListeners();
+      child.stderr?.removeAllListeners();
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+    };
+
+    const terminateChildTree = async (): Promise<string> => {
+      if (child.pid === undefined) {
+        child.kill("SIGKILL");
+        return "spawned process had no pid";
+      }
+      const result = await terminateProcessTree({
+        pid: child.pid,
+        graceMs: SHELL_TERMINATE_GRACE_MS,
+        env: ctx.env,
+      });
+      return result.detail;
+    };
+
     const onAbort = (): void => {
-      child.kill("SIGKILL");
+      void terminateChildTree().then((detail) => {
+        stdoutFileStream?.end();
+        settle({
+          ok: false,
+          error: `attempt ${attempt} aborted: ${detail}`,
+          shell: {
+            stdoutFile,
+            stdout: stdoutBuf,
+            stderr: stderrBuf,
+            stdoutBytes,
+            stderrBytes,
+          },
+        });
+      }, (err: unknown) => {
+        stdoutFileStream?.end();
+        settle({
+          ok: false,
+          error: `attempt ${attempt} aborted and failed to terminate process tree: ${(err as Error).message}`,
+          shell: {
+            stdoutFile,
+            stdout: stdoutBuf,
+            stderr: stderrBuf,
+            stdoutBytes,
+            stderrBytes,
+          },
+        });
+      });
     };
     if (ctx.signal.aborted) {
       onAbort();
@@ -172,26 +291,44 @@ async function runShellAttempt(spec: ShellStepV1, ctx: StepContext, resolvedCwd:
     }
 
     const timer = setTimeout(() => {
-      child.kill("SIGKILL");
-      settle({
-        ok: false,
-        error: `attempt ${attempt} timed out after ${spec.timeoutMs}ms`,
-        shell: {
-          stdout: stdoutBuf,
-          stderr: stderrBuf,
-          stdoutBytes,
-          stderrBytes,
-        },
+      void terminateChildTree().then((detail) => {
+        stdoutFileStream?.end();
+        settle({
+          ok: false,
+          error: `attempt ${attempt} timed out after ${spec.timeoutMs}ms: ${detail}`,
+          shell: {
+            stdoutFile,
+            stdout: stdoutBuf,
+            stderr: stderrBuf,
+            stdoutBytes,
+            stderrBytes,
+          },
+        });
+      }, (err: unknown) => {
+        stdoutFileStream?.end();
+        settle({
+          ok: false,
+          error: `attempt ${attempt} timed out after ${spec.timeoutMs}ms and failed to terminate process tree: ${(err as Error).message}`,
+          shell: {
+            stdoutFile,
+            stdout: stdoutBuf,
+            stderr: stderrBuf,
+            stdoutBytes,
+            stderrBytes,
+          },
+        });
       });
     }, spec.timeoutMs);
 
     child.on("error", (err) => {
       clearTimeout(timer);
       ctx.signal.removeEventListener("abort", onAbort);
+      stdoutFileStream?.end();
       settle({
         ok: false,
         error: `attempt ${attempt} failed to spawn: ${err.message}`,
         shell: {
+          stdoutFile,
           stdout: stdoutBuf,
           stderr: stderrBuf,
           stdoutBytes,
@@ -203,19 +340,31 @@ async function runShellAttempt(spec: ShellStepV1, ctx: StepContext, resolvedCwd:
     child.on("exit", (code) => {
       clearTimeout(timer);
       ctx.signal.removeEventListener("abort", onAbort);
+      closeCapturedStreams();
       const exitCode = code ?? -1;
-      const ok = exitCode === spec.expectExitCode;
-      settle({
-        ok,
-        error: ok ? undefined : `attempt ${attempt} expected exit code ${spec.expectExitCode}, got ${exitCode}`,
-        shell: {
-          exitCode,
-          stdout: stdoutBuf,
-          stderr: stderrBuf,
-          stdoutBytes,
-          stderrBytes,
-        },
-      });
+      const finishResult = (): void => {
+        const exitOk = exitCode === spec.expectExitCode;
+        const ok = exitOk && stdoutFileError === undefined;
+        settle({
+          ok,
+          error: stdoutFileError
+            ? `attempt ${attempt} failed to write stdoutFile: ${stdoutFileError}`
+            : (exitOk ? undefined : `attempt ${attempt} expected exit code ${spec.expectExitCode}, got ${exitCode}`),
+          shell: {
+            exitCode,
+            stdoutFile,
+            stdout: stdoutBuf,
+            stderr: stderrBuf,
+            stdoutBytes,
+            stderrBytes,
+          },
+        });
+      };
+      if (stdoutFileStream) {
+        stdoutFileStream.end(finishResult);
+      } else {
+        finishResult();
+      }
     });
   });
 }

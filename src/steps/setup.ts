@@ -37,6 +37,7 @@ export const SetupStepV1Schema = z
     setupTimeoutMs: z.number().int().positive().default(30_000),
     cwd: BindingPathRefSchema.optional(),
     continueOnFail: z.boolean().optional(),
+    alwaysRun: z.boolean().optional(),
   })
   .strict()
   .superRefine((spec, ctx) => {

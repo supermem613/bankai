@@ -5,3 +5,5 @@
 
 import "./step-output-contains.js";
 import "./assert-text-contains.js";
+import "./assert-text.js";
+import "./assert-json.js";

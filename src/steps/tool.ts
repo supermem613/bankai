@@ -18,6 +18,7 @@ export const ToolStepV1Schema = z
     cwd: BindingPathRefSchema.optional(),
     timeoutMs: z.number().int().positive().default(60_000),
     continueOnFail: z.boolean().optional(),
+    alwaysRun: z.boolean().optional(),
   })
   .strict()
   .superRefine((spec, ctx) => {

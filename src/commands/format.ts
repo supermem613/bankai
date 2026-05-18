@@ -2,7 +2,6 @@ import { writeFileSync } from "node:fs";
 import type { BankaiEnvelope } from "../plan/envelope.js";
 
 export interface FormatOptions {
-  json?: boolean;
   out?: string;
 }
 

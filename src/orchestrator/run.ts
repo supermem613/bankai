@@ -71,6 +71,7 @@ function toEnvelopeStep(id: string, kind: string, started: string, finished: str
     shell: run.shell
       ? {
         exitCode: run.shell.exitCode,
+        stdoutFile: run.shell.stdoutFile,
         stdoutBytes: run.shell.stdoutBytes,
         stderrBytes: run.shell.stderrBytes,
         stdoutTail: tail(run.shell.stdout, STEP_TAIL_BYTES),
@@ -100,6 +101,7 @@ function toEnvelopeStep(id: string, kind: string, started: string, finished: str
     stop: run.stop,
     runPlan: run.runPlan,
     attachedProcess: run.attachedProcess,
+    writeFile: run.writeFile,
   };
 }
 
@@ -139,7 +141,8 @@ export async function runPlan(opts: RunPlanOptions): Promise<BankaiEnvelope> {
   let firstFailure: BankaiFailure | undefined;
 
   for (const stepRef of plan.steps) {
-    if (stopRequested) {
+    const alwaysRun = (stepRef as { alwaysRun?: boolean }).alwaysRun === true;
+    if (stopRequested && !alwaysRun) {
       logger.emit("step.skipped", { stepId: stepRef.id, reason: "earlier failure" });
       continue;
     }

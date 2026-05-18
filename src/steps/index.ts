@@ -11,6 +11,7 @@
 // stop     -- terminate a registered handle by name
 // run-plan -- execute another plan inline as a sub-step (composition)
 // attached-process -- run a foreground dev process owned by the terminal
+// write-file -- write bounded text artifacts such as prompt files
 
 import "./shell.js";
 import "./tool.js";
@@ -20,3 +21,4 @@ import "./wait.js";
 import "./stop.js";
 import "./run-plan.js";
 import "./attached-process.js";
+import "./write-file.js";

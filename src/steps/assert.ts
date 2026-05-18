@@ -28,6 +28,7 @@ export const AssertStepV1Schema = z
     assertion: z.string().min(1),
     config: z.unknown().optional(),
     continueOnFail: z.boolean().optional(),
+    alwaysRun: z.boolean().optional(),
   })
   .strict()
   .superRefine((spec, ctx) => {
@@ -71,6 +72,7 @@ async function runAssertStep(spec: AssertStepV1, ctx: StepContext): Promise<Step
   const outcome = await handler.evaluate(config, {
     env: ctx.env,
     workDir: ctx.workDir,
+    bindings: ctx.bindings,
     priorResults: ctx.priorResults,
   });
   ctx.logger.emit("step.assert.end", { stepId: spec.id, ok: outcome.ok, detail: outcome.detail });

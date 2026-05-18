@@ -59,6 +59,7 @@ export const AttachedProcessStepV1Schema = z.object({
   readyEventFile: BindingPathRefSchema.optional(),
   announceReady: z.boolean().default(true),
   continueOnFail: z.boolean().optional(),
+  alwaysRun: z.boolean().optional(),
 }).strict().superRefine((spec, ctx) => {
   if (spec.stdio === "inherit" && (spec.readyWhen.length > 0 || spec.failWhen.length > 0)) {
     ctx.addIssue({

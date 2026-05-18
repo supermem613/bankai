@@ -43,6 +43,13 @@ export const BindingPathRefSchema = z.union([
 
 export type BindingPathRef = z.infer<typeof BindingPathRefSchema>;
 
+export const BindingValueRefSchema = z.object({
+  binding: z.string().min(1),
+  path: z.string().optional(),
+}).strict();
+
+export type BindingValueRef = z.infer<typeof BindingValueRefSchema>;
+
 export interface ResolveBindingsResultOk {
   ok: true;
   bindings: ResolvedBindings;
@@ -141,6 +148,31 @@ export function resolveBindingPath(ref: BindingPathRef | undefined, opts: { work
   return ref.path ? resolve(base, ref.path) : base;
 }
 
+export function resolveBindingValueRef(ref: BindingValueRef, opts: { workDir: string; bindings: ResolvedBindings }): string {
+  const value = opts.bindings[ref.binding];
+  if (value === undefined) {
+    throw new Error(`missing binding "${ref.binding}"`);
+  }
+  if (ref.path !== undefined) {
+    if (typeof value !== "string") {
+      throw new Error(`binding "${ref.binding}" must be a path string when path is set`);
+    }
+    const base = isAbsolute(value) ? value : resolve(opts.workDir, value);
+    return resolve(base, ref.path);
+  }
+  return String(value);
+}
+
+export function interpolateBindings(value: string, opts: { bindings: ResolvedBindings }): string {
+  return value.replace(/\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}/g, (_match, key: string) => {
+    const binding = opts.bindings[key];
+    if (binding === undefined) {
+      throw new Error(`missing binding "${key}" for template interpolation`);
+    }
+    return String(binding);
+  });
+}
+
 export function bindingsSchemaDocument(): unknown {
   return {
     description: "Bindings are supplied at run time as a JSON array. Plans declare required binding keys in requires.bindings.",
@@ -162,8 +194,8 @@ export function bindingsSchemaDocument(): unknown {
       steps: [],
     },
     cli: {
-      file: "bankai run plan.json --bindings-file bindings.local.json --json",
-      inline: "bankai run plan.json --bindings-json '[{\"key\":\"workspace\",\"value\":\"C:\\\\Users\\\\alice\\\\repos\\\\service\"}]' --json",
+      file: "bankai run plan.json --bindings-file bindings.local.json",
+      inline: "bankai run plan.json --bindings-json '[{\"key\":\"workspace\",\"value\":\"C:\\\\Users\\\\alice\\\\repos\\\\service\"}]'",
     },
   };
 }

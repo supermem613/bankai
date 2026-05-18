@@ -12,6 +12,7 @@ import type {
   StopStepResultSchema,
   RunPlanStepResultSchema,
   AttachedProcessStepResultSchema,
+  WriteFileStepResultSchema,
 } from "../plan/envelope.js";
 
 // StepHandler registry: closed set of step kinds (shell, tool, assert,
@@ -62,6 +63,7 @@ export interface StepContext {
 
 export interface ShellStepRun {
   exitCode?: number;
+  stdoutFile?: string;
   stdout: string;
   stderr: string;
   stdoutBytes: number;
@@ -95,6 +97,7 @@ export interface StepRunResult {
   stop?: z.infer<typeof StopStepResultSchema>;
   runPlan?: z.infer<typeof RunPlanStepResultSchema>;
   attachedProcess?: z.infer<typeof AttachedProcessStepResultSchema>;
+  writeFile?: z.infer<typeof WriteFileStepResultSchema>;
 }
 
 export interface StepHandler<S extends z.ZodTypeAny> {

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { Env } from "../env-runtime/env.js";
 import type { StepRunResult } from "../steps/registry.js";
+import type { ResolvedBindings } from "../bindings.js";
 
 // AssertionHandler registry: closed set of assertion kinds, each owns
 // its zod schema and an evaluator. Invariants the next editor must
@@ -18,6 +19,7 @@ import type { StepRunResult } from "../steps/registry.js";
 export interface AssertionContext {
   env: Env;
   workDir: string;
+  bindings: ResolvedBindings;
   priorResults: Map<string, StepRunResult>;
 }
 

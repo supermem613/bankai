@@ -92,7 +92,6 @@ program
   .option("--bindings-file <path>", "JSON array of {key,value} bindings")
   .option("--bindings-json <json>", "inline JSON array of {key,value} bindings")
   .addOption(new Option("--visible-attached-terminal", "internal: attached-process already owns a visible terminal window").hideHelp())
-  .option("--json", "deprecated no-op; JSON is always emitted")
   .option("--out <path>", "also write the envelope JSON to this path")
   .action(async (planPath: string, opts: Record<string, unknown>) => {
     const visibleInfo = await visibleTerminalPlanInfo(planPath);
@@ -203,7 +202,7 @@ program
     } finally {
       process.removeListener("SIGINT", onSigint);
     }
-    emitEnvelope(opts as { json?: boolean; out?: string }, envelope);
+    emitEnvelope(opts as { out?: string }, envelope);
     process.exit(envelope.ok ? 0 : 1);
   });
 
@@ -212,7 +211,6 @@ program
   .description("Read the per-user shared registry. No plan needed.")
   .option("--log-dir <path>", "directory to write the JSONL run log into")
   .option("--log-file <path>", "explicit log file path")
-  .option("--json", "deprecated no-op; JSON is always emitted")
   .option("--out <path>", "also write the envelope JSON to this path")
   .action(async (name: string | undefined, opts: Record<string, unknown>) => {
     const envelope = await runStatusCommand({
@@ -220,7 +218,7 @@ program
       logDir: opts.logDir as string | undefined,
       logFile: opts.logFile as string | undefined,
     });
-    emitEnvelope(opts as { json?: boolean; out?: string }, envelope);
+    emitEnvelope(opts as { out?: string }, envelope);
     process.exit(envelope.ok ? 0 : 1);
   });
 
@@ -229,7 +227,6 @@ program
   .description("Read detailed logs for registered handles")
   .option("--log-dir <path>", "directory to write the JSONL run log into")
   .option("--log-file <path>", "explicit log file path")
-  .option("--json", "deprecated no-op; JSON is always emitted")
   .option("--out <path>", "also write the envelope JSON to this path")
   .action(async (name: string | undefined, opts: Record<string, unknown>) => {
     const envelope = await runLogsCommand({
@@ -237,7 +234,7 @@ program
       logDir: opts.logDir as string | undefined,
       logFile: opts.logFile as string | undefined,
     });
-    emitEnvelope(opts as { json?: boolean; out?: string }, envelope);
+    emitEnvelope(opts as { out?: string }, envelope);
     process.exit(envelope.ok ? 0 : 1);
   });
 
@@ -248,7 +245,6 @@ program
   .option("--grace-ms <n>", "ms to wait between SIGTERM and SIGKILL", (v) => parseInt(v, 10))
   .option("--log-dir <path>", "directory to write the JSONL run log into")
   .option("--log-file <path>", "explicit log file path")
-  .option("--json", "deprecated no-op; JSON is always emitted")
   .option("--out <path>", "also write the envelope JSON to this path")
   .action(async (name: string, opts: Record<string, unknown>) => {
     const envelope = await runStopCommand({
@@ -258,7 +254,7 @@ program
       logDir: opts.logDir as string | undefined,
       logFile: opts.logFile as string | undefined,
     });
-    emitEnvelope(opts as { json?: boolean; out?: string }, envelope);
+    emitEnvelope(opts as { out?: string }, envelope);
     process.exit(envelope.ok ? 0 : 1);
   });
 
@@ -269,7 +265,6 @@ program
   .option("--prune", "remove stale registry entries and stale lock files")
   .option("--log-dir <path>", "directory to write the JSONL run log into")
   .option("--log-file <path>", "explicit log file path")
-  .option("--json", "deprecated no-op; JSON is always emitted")
   .option("--out <path>", "also write the envelope JSON to this path")
   .action(async (opts: Record<string, unknown>) => {
     const envelope = await runDoctorCommand({
@@ -278,7 +273,7 @@ program
       logDir: opts.logDir as string | undefined,
       logFile: opts.logFile as string | undefined,
     });
-    emitEnvelope(opts as { json?: boolean; out?: string }, envelope);
+    emitEnvelope(opts as { out?: string }, envelope);
     process.exit(envelope.ok ? 0 : 1);
   });
 
@@ -287,14 +282,13 @@ program
   .description("Self-update this Bankai git checkout")
   .option("--log-dir <path>", "directory to write the JSONL run log into")
   .option("--log-file <path>", "explicit log file path")
-  .option("--json", "deprecated no-op; JSON is always emitted")
   .option("--out <path>", "also write the envelope JSON to this path")
   .action(async (opts: Record<string, unknown>) => {
     const envelope = await runUpdateCommand({
       logDir: opts.logDir as string | undefined,
       logFile: opts.logFile as string | undefined,
     });
-    emitEnvelope(opts as { json?: boolean; out?: string }, envelope);
+    emitEnvelope(opts as { out?: string }, envelope);
     process.exit(envelope.ok ? 0 : 1);
   });
 

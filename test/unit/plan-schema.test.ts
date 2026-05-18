@@ -63,6 +63,36 @@ describe("plan schema", () => {
     assert.ok(r.success, JSON.stringify(r.success ? null : r.error.issues));
   });
 
+  it("accepts binding refs in shell args and write-file steps", () => {
+    const r = BankaiPlanV1Schema.safeParse({
+      schemaVersion: "1",
+      name: "generic-cli",
+      requires: {
+        bindings: {
+          workspace: { type: "path", required: true },
+          siteUrl: { type: "url", required: true },
+        },
+      },
+      steps: [
+        {
+          id: "write-prompt",
+          kind: "write-file",
+          file: { binding: "workspace", path: "prompt.txt" },
+          content: "hello",
+        },
+        {
+          id: "run-cli",
+          kind: "shell",
+          command: "kash",
+          args: ["start", { binding: "siteUrl" }, { fileText: { binding: "workspace", path: "prompt.txt" } }, true, 3],
+          stdoutFile: { binding: "workspace", path: "response.json" },
+          alwaysRun: true,
+        },
+      ],
+    });
+    assert.ok(r.success, JSON.stringify(r.success ? null : r.error.issues));
+  });
+
   it("rejects an unknown step kind with a clear message", () => {
     const r = BankaiPlanV1Schema.safeParse({
       schemaVersion: "1",
@@ -127,6 +157,33 @@ describe("plan schema", () => {
           kind: "assert",
           assertion: "step-output-contains",
           config: { stepId: "s1", text: "v" },
+        },
+      ],
+    });
+    assert.ok(r.success, JSON.stringify(r.success ? null : r.error.issues));
+  });
+
+  it("accepts generic text and JSON assertions", () => {
+    const r = BankaiPlanV1Schema.safeParse({
+      schemaVersion: "1",
+      name: "assertions",
+      steps: [
+        { id: "write", kind: "write-file", file: "response.json", content: "{\"text\":\"hello\",\"toolDetails\":[{\"toolName\":\"x\",\"success\":true}]}" },
+        {
+          id: "json",
+          kind: "assert",
+          assertion: "assert-json",
+          config: {
+            file: "response.json",
+            path: ["toolDetails"],
+            arrayContainsObject: { toolName: "x", success: true },
+          },
+        },
+        {
+          id: "text",
+          kind: "assert",
+          assertion: "assert-text",
+          config: { file: "response.json", contains: "hello", notContains: "goodbye" },
         },
       ],
     });
@@ -231,6 +288,7 @@ describe("plan schema", () => {
       ["assert", { id: "assert", kind: "assert", assertion: "step-output-contains", config: { stepId: "shell", text: "x" }, extra: true }],
       ["tool", { id: "tool", kind: "tool", tool: "test-tool", invocation: { input: "p.txt" }, extra: true }],
       ["run-plan", { id: "run-plan", kind: "run-plan", plan: "child.json", extra: true }],
+      ["write-file", { id: "write-file", kind: "write-file", file: "out.txt", content: "hello", extra: true }],
       ["stop", { id: "stop", kind: "stop", name: "svc", extra: true }],
       ["attached-process", { id: "attached-process", kind: "attached-process", command: "node", extra: true }],
     ];

@@ -24,6 +24,7 @@ export const StopStepV1Schema = z.object({
   graceMs: z.number().int().nonnegative().default(5_000),
   force: z.boolean().default(false),
   continueOnFail: z.boolean().optional(),
+  alwaysRun: z.boolean().optional(),
 }).strict();
 
 export type StopStepV1 = z.infer<typeof StopStepV1Schema>;

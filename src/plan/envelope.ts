@@ -39,6 +39,7 @@ export type BankaiFailure = z.infer<typeof BankaiFailureSchema>;
 
 export const ShellStepResultSchema = z.object({
   exitCode: z.number().int().optional(),
+  stdoutFile: z.string().optional(),
   stdoutBytes: z.number().int().nonnegative(),
   stderrBytes: z.number().int().nonnegative(),
   /** Truncated tail of stdout for human reporting. Full content lives in the JSONL log. */
@@ -100,6 +101,11 @@ export const AttachedProcessStepResultSchema = z.object({
   detail: z.string(),
 });
 
+export const WriteFileStepResultSchema = z.object({
+  file: z.string(),
+  bytes: z.number().int().nonnegative(),
+});
+
 export const BankaiStepResultSchema = z.object({
   id: z.string().min(1),
   kind: z.string().min(1),
@@ -116,6 +122,7 @@ export const BankaiStepResultSchema = z.object({
   stop: StopStepResultSchema.optional(),
   runPlan: RunPlanStepResultSchema.optional(),
   attachedProcess: AttachedProcessStepResultSchema.optional(),
+  writeFile: WriteFileStepResultSchema.optional(),
 });
 
 export type BankaiStepResult = z.infer<typeof BankaiStepResultSchema>;

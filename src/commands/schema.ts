@@ -144,7 +144,6 @@ function commonEnvelopeOptions(extra: Array<{ name: string; description: string 
   return [
     { name: "--log-dir <path>", description: "Directory to write the JSONL command log into." },
     { name: "--log-file <path>", description: "Explicit JSONL log file path." },
-    { name: "--json", description: "Deprecated no-op. JSON is always emitted." },
     { name: "--out <path>", description: "Also write the envelope JSON to this path." },
     ...extra,
   ];
