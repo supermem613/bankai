@@ -1,8 +1,11 @@
 import { z } from "zod";
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { createInterface } from "node:readline";
-import { resolve as resolvePath, isAbsolute as isAbsolutePath } from "node:path";
+import { delimiter, join } from "node:path";
 import { registerStep, type StepContext, type StepRunResult } from "./registry.js";
+import { BindingPathRefSchema, resolveBindingPath } from "../bindings.js";
+import type { Env } from "../env-runtime/env.js";
 
 // shell step kind: spawn a single short-lived command, capture stdout
 // and stderr to memory and stream them line-by-line into the JSONL
@@ -12,9 +15,8 @@ import { registerStep, type StepContext, type StepRunResult } from "./registry.j
 //   1. shell:false. Anything that goes through cmd.exe or /bin/sh
 //      introduces quoting bugs and lets unsanitized strings execute.
 //   2. windowsHide:true. Headless CI runs must not orphan windows.
-//   3. command resolution is host-dependent. On Windows, plain "node"
-//      without ".exe" may fail without shell:true. Plans should use
-//      absolute paths or process.execPath when portability matters.
+//   3. command resolution preserves Windows .cmd shims through cmd.exe.
+//      This lets plans invoke PATH tools without hardcoding JS entrypoints.
 //   4. spec.cwd is interpreted relative to ctx.workDir when relative.
 //      ctx.workDir is the resolved repoRoot for the run, NOT
 //      process.cwd, so bankai produces stable behavior regardless of
@@ -34,31 +36,80 @@ export const ShellStepV1Schema = z.object({
   id: z.string().min(1),
   command: z.string().min(1),
   args: z.array(z.string()).default([]),
-  cwd: z.string().optional(),
+  resolveCommand: z.boolean().default(true),
+  cwd: BindingPathRefSchema.optional(),
   timeoutMs: z.number().int().positive().default(30_000),
   expectExitCode: z.number().int().default(0),
+  retries: z.number().int().min(0).max(5).default(0),
   maxBufferBytes: z.number().int().positive().default(DEFAULT_BUFFER_BYTES),
   /** Optional environment variables merged into the spawn env. NEVER persisted in step results or registry. */
   env: z.record(z.string(), z.string()).optional(),
   continueOnFail: z.boolean().optional(),
-});
+}).strict();
 
 export type ShellStepV1 = z.infer<typeof ShellStepV1Schema>;
 
-async function runShell(spec: ShellStepV1, ctx: StepContext): Promise<StepRunResult> {
-  const resolvedCwd = spec.cwd
-    ? isAbsolutePath(spec.cwd)
-      ? spec.cwd
-      : resolvePath(ctx.workDir, spec.cwd)
-    : ctx.workDir;
+interface ResolvedShellCommand {
+  command: string;
+  args: string[];
+  detail: string;
+  windowsVerbatimArguments?: boolean;
+}
 
+function findOnPath(env: Env, command: string): string | undefined {
+  if (command.includes("\\") || command.includes("/")) {
+    return existsSync(command) ? command : undefined;
+  }
+  const pathVar = env.env.PATH ?? env.env.Path ?? "";
+  const dirs = pathVar.split(delimiter).filter((dir) => dir.length > 0);
+  const exts = env.platform === "win32"
+    ? (env.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").map((ext) => ext.toLowerCase())
+    : [""];
+  for (const dir of dirs) {
+    for (const ext of exts) {
+      const candidate = join(dir, command + ext);
+      if (existsSync(candidate)) {
+        return candidate;
+      }
+    }
+  }
+  return undefined;
+}
+
+function quoteCmdArg(value: string): string {
+  return `"${value.replace(/"/g, '""')}"`;
+}
+
+export function resolveShellCommand(spec: ShellStepV1, env: Env): ResolvedShellCommand {
+  if (!spec.resolveCommand) {
+    return { command: spec.command, args: spec.args, detail: spec.command };
+  }
+  const discovered = findOnPath(env, spec.command) ?? spec.command;
+  if (env.platform === "win32" && discovered.toLowerCase().endsWith(".cmd") && existsSync(discovered)) {
+    const cmd = env.env.ComSpec ?? env.env.COMSPEC ?? "cmd.exe";
+    const commandLine = [quoteCmdArg(discovered), ...spec.args.map(quoteCmdArg)].join(" ");
+    return {
+      command: cmd,
+      args: ["/d", "/s", "/c", `"${commandLine}"`],
+      detail: `${cmd} /d /s /c "${commandLine}"`,
+      windowsVerbatimArguments: true,
+    };
+  }
+  return { command: discovered, args: spec.args, detail: discovered };
+}
+
+async function runShellAttempt(spec: ShellStepV1, ctx: StepContext, resolvedCwd: string, attempt: number): Promise<StepRunResult> {
+  const resolvedCommand = resolveShellCommand(spec, ctx.env);
   ctx.logger.emit("step.shell.spawn", {
     stepId: spec.id,
-    command: spec.command,
-    args: spec.args,
+    command: resolvedCommand.command,
+    args: resolvedCommand.args,
+    requestedCommand: spec.command,
+    resolvedCommand: resolvedCommand.detail,
     cwd: resolvedCwd,
     timeoutMs: spec.timeoutMs,
     expectExitCode: spec.expectExitCode,
+    attempt,
   });
 
   return await new Promise<StepRunResult>((resolveRun) => {
@@ -71,10 +122,11 @@ async function runShell(spec: ShellStepV1, ctx: StepContext): Promise<StepRunRes
       resolveRun(r);
     };
 
-    const child = spawn(spec.command, spec.args, {
+    const child = spawn(resolvedCommand.command, resolvedCommand.args, {
       cwd: resolvedCwd,
       shell: false,
       windowsHide: true,
+      windowsVerbatimArguments: resolvedCommand.windowsVerbatimArguments,
       env: spec.env ? { ...ctx.env.env, ...spec.env } : (ctx.env.env as NodeJS.ProcessEnv),
     });
 
@@ -123,7 +175,7 @@ async function runShell(spec: ShellStepV1, ctx: StepContext): Promise<StepRunRes
       child.kill("SIGKILL");
       settle({
         ok: false,
-        error: `timed out after ${spec.timeoutMs}ms`,
+        error: `attempt ${attempt} timed out after ${spec.timeoutMs}ms`,
         shell: {
           stdout: stdoutBuf,
           stderr: stderrBuf,
@@ -138,7 +190,7 @@ async function runShell(spec: ShellStepV1, ctx: StepContext): Promise<StepRunRes
       ctx.signal.removeEventListener("abort", onAbort);
       settle({
         ok: false,
-        error: err.message,
+        error: `attempt ${attempt} failed to spawn: ${err.message}`,
         shell: {
           stdout: stdoutBuf,
           stderr: stderrBuf,
@@ -155,7 +207,7 @@ async function runShell(spec: ShellStepV1, ctx: StepContext): Promise<StepRunRes
       const ok = exitCode === spec.expectExitCode;
       settle({
         ok,
-        error: ok ? undefined : `expected exit code ${spec.expectExitCode}, got ${exitCode}`,
+        error: ok ? undefined : `attempt ${attempt} expected exit code ${spec.expectExitCode}, got ${exitCode}`,
         shell: {
           exitCode,
           stdout: stdoutBuf,
@@ -166,6 +218,28 @@ async function runShell(spec: ShellStepV1, ctx: StepContext): Promise<StepRunRes
       });
     });
   });
+}
+
+async function runShell(spec: ShellStepV1, ctx: StepContext): Promise<StepRunResult> {
+  const resolvedCwd = resolveBindingPath(spec.cwd, { workDir: ctx.workDir, bindings: ctx.bindings });
+  const totalAttempts = spec.retries + 1;
+  let lastResult: StepRunResult | undefined;
+  for (let attempt = 1; attempt <= totalAttempts; attempt++) {
+    if (ctx.signal.aborted) {
+      break;
+    }
+    lastResult = await runShellAttempt(spec, ctx, resolvedCwd, attempt);
+    if (lastResult.ok || attempt === totalAttempts) {
+      return lastResult;
+    }
+    ctx.logger.emit("step.shell.retry", {
+      stepId: spec.id,
+      attempt,
+      nextAttempt: attempt + 1,
+      error: lastResult.error,
+    });
+  }
+  return lastResult ?? { ok: false, error: "shell step aborted before it started" };
 }
 
 registerStep({

@@ -18,7 +18,7 @@ export const PortReadinessProbeConfigSchema = z.object({
   host: z.string().min(1).default("127.0.0.1"),
   port: z.number().int().min(1).max(65535),
   timeoutMs: z.number().int().positive().default(2000),
-});
+}).strict();
 
 export type PortReadinessProbeConfig = z.infer<typeof PortReadinessProbeConfigSchema>;
 

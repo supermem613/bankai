@@ -8,9 +8,8 @@ import type { Env } from "./env-runtime/env.js";
 //   1. Existing .bankai/ directory
 //   2. .git/ directory
 //   3. package.json file
-// If none are found, the starting directory is used. This mirrors the
-// rotunda/kash convention of letting users opt into a project boundary
-// by simply having any of the three markers.
+// If none are found, the starting directory is used. Users opt into a project
+// boundary by simply having any of the three markers.
 //
 // INVARIANT: this function must NEVER read process.cwd directly. The
 // starting directory is passed in. Tests pass tmpdirs.

@@ -29,6 +29,7 @@ export const AssertStepV1Schema = z
     config: z.unknown().optional(),
     continueOnFail: z.boolean().optional(),
   })
+  .strict()
   .superRefine((spec, ctx) => {
     let handler;
     try {

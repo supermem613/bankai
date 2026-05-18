@@ -14,6 +14,7 @@ import {
 } from "../steps/registry.js";
 import { createHandleStore } from "./handle-store.js";
 import { createLifecycleScope } from "../environments/lifecycle-scope.js";
+import type { ResolvedBindings } from "../bindings.js";
 
 // runPlan: execute a BankaiPlanV1 to completion. Iterates steps in
 // order. Each step receives a StepContext bound to the same logger,
@@ -44,7 +45,10 @@ export interface RunPlanOptions {
   repoRoot: string;
   logger: RunLogger;
   registry: RegistryStore;
+  bindings?: ResolvedBindings;
   parentSignal?: AbortSignal;
+  visibleAttachedTerminal?: boolean;
+  visibleReadyEventFile?: string;
   /** When true, this is a nested run via a run-plan step. Affects logging only. */
   sub?: boolean;
 }
@@ -95,11 +99,13 @@ function toEnvelopeStep(id: string, kind: string, started: string, finished: str
     wait: run.wait,
     stop: run.stop,
     runPlan: run.runPlan,
+    attachedProcess: run.attachedProcess,
   };
 }
 
 export async function runPlan(opts: RunPlanOptions): Promise<BankaiEnvelope> {
   const { env, plan, planPath, logger, registry, repoRoot } = opts;
+  const bindings = opts.bindings ?? {};
   const startedAt = env.clock.isoNow();
   const startedNow = env.clock.now();
   const ac = new AbortController();
@@ -124,6 +130,7 @@ export async function runPlan(opts: RunPlanOptions): Promise<BankaiEnvelope> {
     planName: plan.name,
     planPath,
     stepCount: plan.steps.length,
+    bindingKeys: Object.keys(bindings).sort(),
   });
 
   const priorResults = new Map<string, StepRunResult>();
@@ -156,8 +163,11 @@ export async function runPlan(opts: RunPlanOptions): Promise<BankaiEnvelope> {
         workDir: repoRoot,
         planName: plan.name,
         planPath,
+        bindings,
         signal: ac.signal,
         logger,
+        visibleAttachedTerminal: opts.visibleAttachedTerminal === true,
+        visibleReadyEventFile: opts.visibleReadyEventFile,
         handles,
         registry,
         scope,

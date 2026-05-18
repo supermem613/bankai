@@ -28,7 +28,7 @@ export const LogLineMatchesProbeConfigSchema = z.object({
   pattern: z.string().min(1),
   flags: z.string().default(""),
   maxBytes: z.number().int().positive().default(1_048_576),
-});
+}).strict();
 
 export type LogLineMatchesProbeConfig = z.infer<typeof LogLineMatchesProbeConfigSchema>;
 

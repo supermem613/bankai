@@ -1,8 +1,8 @@
 import { z } from "zod";
-import { isAbsolute, resolve } from "node:path";
 import { registerStep, type StepContext, type StepRunResult } from "./registry.js";
 import { getEnvironment } from "../environments/registry.js";
 import type { ProcessHandle, RegistryEntry } from "../registry/types.js";
+import { BindingPathRefSchema, resolveBindingPath } from "../bindings.js";
 
 // setup step kind: invoke an environment plugin (noop, managed-process,
 // future docker, ...). Two paths through this step:
@@ -35,9 +35,10 @@ export const SetupStepV1Schema = z
     config: z.unknown().optional(),
     registerAs: z.string().min(1).optional(),
     setupTimeoutMs: z.number().int().positive().default(30_000),
-    cwd: z.string().optional(),
+    cwd: BindingPathRefSchema.optional(),
     continueOnFail: z.boolean().optional(),
   })
+  .strict()
   .superRefine((spec, ctx) => {
     const plugin = getEnvironment(spec.env);
     if (!plugin) {
@@ -241,11 +242,7 @@ async function runPersistentSetup(
 }
 
 async function runSetupStep(spec: SetupStepV1, ctx: StepContext): Promise<StepRunResult> {
-  const resolvedCwd = spec.cwd
-    ? isAbsolute(spec.cwd)
-      ? spec.cwd
-      : resolve(ctx.workDir, spec.cwd)
-    : ctx.workDir;
+  const resolvedCwd = resolveBindingPath(spec.cwd, { workDir: ctx.workDir, bindings: ctx.bindings });
   if (spec.registerAs) {
     return runPersistentSetup(spec, ctx, resolvedCwd, spec.registerAs);
   }

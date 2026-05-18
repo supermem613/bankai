@@ -49,6 +49,21 @@ export const ProcessHandleSchema = z.object({
   logFile: z.string().min(1),
   logStartOffset: z.number().int().nonnegative().default(0),
   fingerprint: ProcessFingerprintSchema.optional(),
+  control: z.object({
+    stopRequestFile: z.string().min(1),
+    stopDoneFile: z.string().min(1),
+  }).strict().optional(),
+  evidence: z.object({
+    transcriptFile: z.string().min(1).optional(),
+    detail: z.string().min(1).optional(),
+    lastResult: z.object({
+      ok: z.boolean(),
+      finishedAt: z.string().min(1),
+      detail: z.string().min(1),
+      exitCode: z.number().int().optional(),
+      signal: z.string().optional(),
+    }).strict().optional(),
+  }).strict().optional(),
 });
 
 export type ProcessHandle = z.infer<typeof ProcessHandleSchema>;

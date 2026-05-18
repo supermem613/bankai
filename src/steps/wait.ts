@@ -2,6 +2,7 @@ import { z } from "zod";
 import { registerStep, type StepContext, type StepRunResult } from "./registry.js";
 import { ReadinessProbeRefSchema } from "../plan/schema.js";
 import { evaluateReadiness } from "../readiness/evaluate.js";
+import { getReadinessProbe } from "../readiness/registry.js";
 import type { ProcessHandle } from "../registry/types.js";
 import { isProcessAlive } from "../process-tree.js";
 
@@ -34,6 +35,7 @@ export const WaitStepV1Schema = z
     pollIntervalMs: z.number().int().positive().default(250),
     continueOnFail: z.boolean().optional(),
   })
+  .strict()
   .superRefine((spec, ctx) => {
     if (!spec.fromStepId && !spec.fromRegistry) {
       ctx.addIssue({
@@ -49,6 +51,27 @@ export const WaitStepV1Schema = z
         path: ["fromStepId"],
       });
     }
+    spec.for.forEach((ref, index) => {
+      const probe = getReadinessProbe(ref.kind);
+      if (!probe) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `unknown readiness probe kind: ${ref.kind}`,
+          path: ["for", index, "kind"],
+        });
+        return;
+      }
+      const parsed = probe.configSchema.safeParse(ref);
+      if (!parsed.success) {
+        for (const issue of parsed.error.issues) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: issue.message,
+            path: ["for", index, ...issue.path],
+          });
+        }
+      }
+    });
   });
 
 export type WaitStepV1 = z.infer<typeof WaitStepV1Schema>;

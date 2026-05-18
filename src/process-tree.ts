@@ -81,6 +81,149 @@ async function runTaskkill(env: Env, args: string[]): Promise<{ exitCode: number
   });
 }
 
+async function runProbe(env: Env, command: string, args: string[]): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      stdio: ["ignore", "pipe", "pipe"],
+      env: env.env,
+      windowsHide: true,
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout?.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString("utf8");
+    });
+    child.stderr?.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString("utf8");
+    });
+    child.on("error", reject);
+    child.on("exit", (code) => resolve({ exitCode: code ?? -1, stdout, stderr }));
+  });
+}
+
+function collectDescendants(root: number, rows: Array<{ pid: number; ppid: number }>): number[] {
+  const children = new Map<number, number[]>();
+  for (const row of rows) {
+    const list = children.get(row.ppid) ?? [];
+    list.push(row.pid);
+    children.set(row.ppid, list);
+  }
+  const result: number[] = [];
+  const stack = [root];
+  const seen = new Set<number>();
+  while (stack.length > 0) {
+    const pid = stack.pop()!;
+    if (seen.has(pid)) {
+      continue;
+    }
+    seen.add(pid);
+    result.push(pid);
+    for (const child of children.get(pid) ?? []) {
+      stack.push(child);
+    }
+  }
+  return result;
+}
+
+export async function listProcessTreePids(opts: { pid: number; env: Env }): Promise<number[]> {
+  if (!isProcessAlive(opts.pid)) {
+    return [];
+  }
+  if (opts.env.platform === "win32") {
+    const ps = "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId | ConvertTo-Json -Compress";
+    try {
+      const result = await runProbe(opts.env, "powershell.exe", ["-NoProfile", "-NoLogo", "-NonInteractive", "-Command", ps]);
+      if (result.exitCode !== 0 || !result.stdout.trim()) {
+        return [opts.pid];
+      }
+      const parsed = JSON.parse(result.stdout) as Array<{ ProcessId: number; ParentProcessId: number }> | { ProcessId: number; ParentProcessId: number };
+      const rows = (Array.isArray(parsed) ? parsed : [parsed])
+        .map((row) => ({ pid: row.ProcessId, ppid: row.ParentProcessId }))
+        .filter((row) => Number.isFinite(row.pid) && Number.isFinite(row.ppid));
+      return collectDescendants(opts.pid, rows);
+    } catch {
+      return [opts.pid];
+    }
+  }
+  try {
+    const result = await runProbe(opts.env, "ps", ["-eo", "pid=,ppid="]);
+    if (result.exitCode !== 0) {
+      return [opts.pid];
+    }
+    const rows = result.stdout.split(/\r?\n/)
+      .map((line) => line.trim().split(/\s+/).map(Number))
+      .filter((parts) => parts.length === 2 && parts.every(Number.isFinite))
+      .map(([pid, ppid]) => ({ pid, ppid }));
+    return collectDescendants(opts.pid, rows);
+  } catch {
+    return [opts.pid];
+  }
+}
+
+export async function waitForPidsExit(pids: number[], timeoutMs: number, pollIntervalMs = DEFAULT_POLL_INTERVAL_MS): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  const unique = [...new Set(pids)];
+  while (Date.now() < deadline) {
+    if (unique.every((pid) => !isProcessAlive(pid))) {
+      return true;
+    }
+    await delay(pollIntervalMs);
+  }
+  return unique.every((pid) => !isProcessAlive(pid));
+}
+
+export async function terminateProcessTrees(opts: { pids: number[]; graceMs: number; env: Env }): Promise<TerminateResult> {
+  const unique = [...new Set(opts.pids)].filter(isProcessAlive);
+  if (unique.length === 0) {
+    return { killed: true, escalated: false, detail: "all tracked pids were already gone" };
+  }
+  if (opts.env.platform !== "win32") {
+    for (const pid of unique) {
+      try {
+        process.kill(pid, "SIGTERM");
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code !== "ESRCH" && code !== "EPERM") {
+          throw err;
+        }
+      }
+    }
+    if (await waitForPidsExit(unique, opts.graceMs)) {
+      return { killed: true, escalated: false, detail: `SIGTERM succeeded for tracked pids: ${unique.join(", ")}` };
+    }
+    for (const pid of unique.filter(isProcessAlive)) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code !== "ESRCH" && code !== "EPERM") {
+          throw err;
+        }
+      }
+    }
+    const killed = await waitForPidsExit(unique, Math.max(opts.graceMs, 2000));
+    return {
+      killed,
+      escalated: true,
+      detail: killed
+        ? `SIGKILL succeeded for tracked pids: ${unique.join(", ")}`
+        : `SIGKILL failed for tracked pids: ${unique.filter(isProcessAlive).join(", ")}`,
+    };
+  }
+  const results: TerminateResult[] = [];
+  for (const pid of unique) {
+    results.push(await terminateProcessTree({ pid, graceMs: opts.graceMs, env: opts.env }));
+  }
+  const killed = unique.every((pid) => !isProcessAlive(pid));
+  return {
+    killed,
+    escalated: results.some((r) => r.escalated),
+    detail: killed
+      ? `terminated lingering process trees: ${unique.join(", ")}`
+      : `failed to terminate lingering pids: ${unique.filter(isProcessAlive).join(", ")}`,
+  };
+}
+
 export async function terminateProcessTree(opts: TerminateOptions): Promise<TerminateResult> {
   const { pid, graceMs, env } = opts;
   const pollIntervalMs = opts.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;

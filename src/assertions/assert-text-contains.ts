@@ -26,7 +26,7 @@ export const AssertTextContainsAssertionV1Schema = z.object({
   id: z.string().min(1),
   file: z.string().min(1),
   text: z.string().min(1),
-});
+}).strict();
 
 export type AssertTextContainsAssertionV1 = z.infer<typeof AssertTextContainsAssertionV1Schema>;
 

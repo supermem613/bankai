@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { getStepHandler, listRegisteredStepKinds } from "../steps/registry.js";
+import { RequiresSchema } from "../bindings.js";
 
 // BankaiPlanV1: the single unified plan shape. A plan is a name plus a
 // sequence of steps. There is NO kind discriminator on the plan itself.
@@ -37,7 +38,7 @@ export const StepCommonSchema = z.object({
   kind: z.string().min(1),
   /** When true, a failure of this step does NOT stop the plan. The step result still records ok=false. Default false. */
   continueOnFail: z.boolean().default(false),
-});
+}).strict();
 
 export type StepCommon = z.infer<typeof StepCommonSchema>;
 
@@ -82,8 +83,10 @@ export const BankaiPlanV1Schema = z
     schemaVersion: z.literal("1"),
     name: z.string().min(1),
     description: z.string().optional(),
+    requires: RequiresSchema.optional(),
     steps: z.array(StepRefSchema).min(1),
   })
+  .strict()
   .superRefine((plan, ctx) => {
     const seen = new Set<string>();
     for (let i = 0; i < plan.steps.length; i++) {

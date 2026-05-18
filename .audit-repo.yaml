@@ -1,0 +1,33 @@
+name: bankai
+
+source_of_truth:
+  file: src/cli.ts
+  extractor: regex
+  pattern: '\.command\("([^ "\)]+)'
+  sort: source_order
+
+targets:
+  - file: README.md
+    section: { heading: "Commands" }
+    match: list_item
+
+stale_terms:
+  - term: "Reliable orchestration engine for dev-loop and test plan execution with environment plugins"
+    reason: Replaced by the agentic-first public description.
+    allow_in: []
+  - term: "<you>"
+    reason: Placeholder clone URLs are not valid OSS setup instructions.
+    allow_in: []
+  - term: "--pretty"
+    reason: The CLI emits JSON envelopes by default and no longer documents pretty output.
+    allow_in: []
+  - term: "--details"
+    reason: Detailed status output was replaced by the bankai logs command.
+    allow_in: []
+  - term: "kash"
+    reason: Product-specific tool integration was removed from the OSS package.
+    allow_in: []
+
+exclude_globs:
+  - package-lock.json
+  - coverage/**

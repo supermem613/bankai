@@ -1,24 +1,50 @@
 {
   "name": "bankai",
   "version": "0.1.1",
-  "description": "Reliable orchestration engine for dev-loop and test plan execution with environment plugins",
+  "description": "Agentic-first orchestration engine for reliable dev-loop, test, and tool workflows",
   "type": "module",
   "bin": {
     "bankai": "./dist/cli.js"
   },
+  "files": [
+    "dist/",
+    ".claude/skills/",
+    "docs/",
+    "README.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
+    "LICENSE"
+  ],
   "scripts": {
     "prebuild": "eslint src/ test/ && tsc --noEmit -p test/tsconfig.json",
-    "build": "tsc",
+    "build": "npm run clean && tsc",
     "test": "node test/run.mjs test/**/*.test.ts",
     "test:unit": "node test/run.mjs test/unit/**/*.test.ts",
     "test:integration": "node test/run.mjs test/integration/**/*.test.ts",
+    "coverage": "c8 --reporter=text --all --include \"src/**/*.ts\" --exclude \"src/**/interface.ts\" --exclude \"src/**/types.ts\" --exclude \"src/plan/envelope.ts\" --exclude \"src/cli.ts\" node test/run.mjs test/**/*.test.ts",
+    "coverage:check": "c8 --check-coverage --lines 74 --branches 64 --functions 83 --all --include \"src/**/*.ts\" --exclude \"src/**/interface.ts\" --exclude \"src/**/types.ts\" --exclude \"src/plan/envelope.ts\" --exclude \"src/cli.ts\" node test/run.mjs test/**/*.test.ts",
     "lint": "eslint src/ test/ && tsc --noEmit && tsc --noEmit -p test/tsconfig.json",
     "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
+    "prepack": "npm run build",
     "prepublishOnly": "npm run build"
   },
-  "keywords": [],
+  "keywords": [
+    "agentic",
+    "orchestration",
+    "dev-loop",
+    "test-automation",
+    "cli"
+  ],
   "author": "Marcus Markiewicz",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/marcusm_microsoft/bankai.git"
+  },
+  "bugs": {
+    "url": "https://github.com/marcusm_microsoft/bankai/issues"
+  },
+  "homepage": "https://github.com/marcusm_microsoft/bankai#readme",
   "engines": {
     "node": ">=24.0.0"
   },
@@ -30,6 +56,7 @@
   "devDependencies": {
     "@eslint/js": "^9.18.0",
     "@types/node": "^24.12.3",
+    "c8": "^11.0.0",
     "eslint": "^9.18.0",
     "globals": "^15.14.0",
     "minimatch": "^10.0.1",

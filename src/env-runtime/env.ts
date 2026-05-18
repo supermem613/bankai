@@ -46,8 +46,8 @@ const defaultLogger: LoggerFacade = {
 export function createNodeEnv(opts: CreateNodeEnvOptions = {}): Env {
   // Snapshot HOME-equivalent and full env at construction. USERPROFILE is the
   // Windows native, HOME is POSIX. Test runners set both to a sandbox tmpdir.
-  // exec and platform are also snapshotted here so tool plugins like kash can
-  // reach the host node binary and OS family without re-reading process.*
+  // exec and platform are also snapshotted here so steps and plugins can reach
+  // the host node binary and OS family without re-reading process.*
   // outside this single chokepoint.
   const home = process.env.USERPROFILE ?? process.env.HOME ?? "";
   const envSnapshot: Record<string, string | undefined> = { ...process.env };

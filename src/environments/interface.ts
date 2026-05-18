@@ -5,8 +5,8 @@ import type { ProcessHandle } from "../registry/types.js";
 
 // EnvironmentPlugin: the open extension point for the bankai engine. While
 // step kinds and assertion kinds are intentionally closed, an environment
-// plugin can be added to teach the engine about a new target (managed-process,
-// future docker, kubernetes, augloop, ...). Invariants the next editor must
+// plugin can be added to teach the engine about a new target such as a managed
+// process, container, or remote service. Invariants the next editor must
 // preserve:
 //   1. doctor must be safe to call any time without side effects on the
 //      target environment. It performs structural checks like "is the CLI on

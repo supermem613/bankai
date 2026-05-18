@@ -92,6 +92,14 @@ export const RunPlanStepResultSchema = z.object({
   inner: z.unknown(),
 });
 
+export const AttachedProcessStepResultSchema = z.object({
+  exitCode: z.number().int().optional(),
+  signal: z.string().optional(),
+  stoppedBy: z.enum(["exit", "ctrl-c", "timeout"]).default("exit"),
+  escalated: z.boolean().default(false),
+  detail: z.string(),
+});
+
 export const BankaiStepResultSchema = z.object({
   id: z.string().min(1),
   kind: z.string().min(1),
@@ -107,13 +115,14 @@ export const BankaiStepResultSchema = z.object({
   wait: WaitStepResultSchema.optional(),
   stop: StopStepResultSchema.optional(),
   runPlan: RunPlanStepResultSchema.optional(),
+  attachedProcess: AttachedProcessStepResultSchema.optional(),
 });
 
 export type BankaiStepResult = z.infer<typeof BankaiStepResultSchema>;
 
 export const BankaiEnvelopeSchema = z.object({
   ok: z.boolean(),
-  command: z.enum(["run", "status", "stop", "doctor"]),
+  command: z.enum(["run", "status", "logs", "stop", "doctor"]),
   startedAt: z.string().min(1),
   finishedAt: z.string().min(1),
   durationMs: z.number().int().nonnegative(),

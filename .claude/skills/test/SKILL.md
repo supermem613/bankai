@@ -2,8 +2,8 @@
 name: test
 description: |
   Run end-to-end test plans against any repo using the bankai orchestrator.
-  Each plan is a self-contained, schema-validated JSON file under
-  <repo>/.bankai/plans/<name>.test.json. Bankai validates the plan, runs every
+  Each plan is a self-contained, schema-validated JSON file in this skill's
+  plans directory. Bankai validates the plan, runs every
   step (including assert steps), and returns a single JSON envelope. Use when
   the user says "/test <name>", "test <name>", "run the <name> test plan", or
   "verify <name> end-to-end". Repo-agnostic.
@@ -37,12 +37,15 @@ Do NOT run for unit tests (`yarn test`, `npm test`) or pure design questions.
 
 ### 1. Resolve the plan file
 
-Plans live at `<repo>/.bankai/plans/<name>.test.json`. The repo root is the
-working directory when you were invoked, unless the user said otherwise.
+Plans live in this skill's `plans\` directory. Resolve that directory from the
+loaded skill context, not from the target repo.
 
 ```powershell
-Get-ChildItem -Path .bankai\plans -Filter *.test.json -Recurse |
-  Select-Object -ExpandProperty FullName
+$plansDir = Join-Path $skillBase 'plans'
+$planPath = Get-ChildItem -Path $plansDir -Filter *.test.json -Recurse |
+  Where-Object { $_.BaseName -like "*<name>*" } |
+  Select-Object -First 1 -ExpandProperty FullName
+Write-Output $planPath
 ```
 
 If the user-supplied name does not exactly match a file, prefer the closest
@@ -51,17 +54,14 @@ suffix match. Ask if more than one matches.
 ### 2. Run the plan
 
 ```powershell
-bankai run .bankai\plans\<name>.test.json --json
+bankai run $planPath --json
 ```
 
 Stdout is the envelope JSON. The exit code is the truth: `0` on pass, `1`
 on any failure (validation, setup, step, assert, teardown).
 
-If `bankai` is not on PATH, fall back to:
-
-```powershell
-node $env:USERPROFILE\repos\bankai\dist\cli.js run .bankai\plans\<name>.test.json --json
-```
+If `bankai` is not on PATH, stop and report that Bankai must be built and
+linked before this skill can run. Do not guess machine-local repository paths.
 
 ### 3. Read the envelope
 
@@ -100,6 +100,11 @@ is a quick reference.
   "schemaVersion": "1",
   "name": "skills-smoke",
   "description": "Optional human-readable summary",
+  "requires": {
+    "bindings": {
+      "workspace": { "type": "path", "required": false }
+    }
+  },
   "steps": [
     /* StepRefs, executed in order, stop on first failure unless continueOnFail */
   ]
@@ -122,25 +127,25 @@ Run a short-lived command, capture stdout, stderr, and exit code.
   "id": "build",
   "command": "yarn",
   "args": ["build"],
-  "cwd": "packages/foo",     // optional. relative paths resolve against repoRoot
+  "cwd": { "binding": "workspace" }, // optional. from required bindings
   "timeoutMs": 60000,         // optional. default 30000
   "expectExitCode": 0          // optional. default 0
 }
 ```
 
-`cwd` resolves against the repo root when relative. The repo root is the
-nearest ancestor with `.bankai/`, `.git/`, or `package.json`.
+`cwd` can reference a required binding when a plan needs machine-local paths.
+Pass values with `--bindings-file` or `--bindings-json`.
 
 #### `tool`
 
-Dispatch to a registered tool plugin under `<bankai>/src/tools/`. The tool
-plugin owns all tactical knowledge for the binary it wraps.
+Dispatch to a registered tool plugin under `<bankai>/src/tools/`. Bankai ships
+no product-specific tool plugins. Prefer `shell` for project-specific CLIs.
 
 ```jsonc
 {
   "kind": "tool",
-  "id": "ask-kash",
-  "tool": "kash",
+  "id": "ask-tool",
+  "tool": "example-tool",
   "config":     { /* validated by the plugin's configSchema */ },
   "invocation": { /* validated by the plugin's invocationSchema */ },
   "cwd": ".",
@@ -148,17 +153,22 @@ plugin owns all tactical knowledge for the binary it wraps.
 }
 ```
 
-Registered tool plugins:
+Product-specific CLIs should usually be modeled with `shell`:
 
-- **`kash`** — invokes the kash CLI. Plugin owns entrypoint discovery
-  (Windows .cmd shim → node + dist/cli.js), bounded retries, and optional
-  `kash refresh` between failed attempts.
-  - `invocation`: `{ promptFile: string, outFile: string, subcommand?: string }`.
-    Default subcommand is `prompt`. `promptFile` and `outFile` resolve
-    against the repo root when relative.
-  - `config`: `{ binary?, baseArgs?, retries?, refreshOnRetry?, attemptTimeoutMs?, refreshTimeoutMs? }`.
-    Production plans usually leave config empty and let discovery find kash
-    on PATH.
+```jsonc
+{
+  "kind": "shell",
+  "id": "ask-cli",
+  "command": "agent-cli",
+  "args": ["prompt", "--prompt-file", "prompt.txt", "--out", "response.txt"],
+  "resolveCommand": true,
+  "retries": 1,
+  "timeoutMs": 180000
+}
+```
+
+`resolveCommand: true` preserves Windows `.cmd` shims without hardcoding a
+tool's internal JavaScript entrypoint.
 
 #### `assert`
 
@@ -195,15 +205,15 @@ the user already started with `dev-loop`.
 ## Authoring a new plan
 
 1. Pick a plan name. Kebab-case. The file goes at
-   `<repo>/.bankai/plans/<name>.test.json`.
+   `plans\<name>.test.json` next to this SKILL.md.
 2. Copy the closest template from `plans/` next to this SKILL.md. Adapt
    the steps.
-3. Validate it: `bankai doctor --plan .bankai\plans\<name>.test.json`.
-4. Run it: `bankai run .bankai\plans\<name>.test.json --pretty`. The
+3. Validate it: `bankai doctor --plan $planPath --json`.
+4. Run it: `bankai run $planPath --json`. The
    envelope is the spec. If a field is wrong, fix the JSON, not the output.
-5. If a needed step kind, assertion kind, or tool plugin is missing, add it
-   to bankai under `src/steps/`, `src/assertions/`, or `src/tools/`. Do NOT
-   shoehorn logic into a `shell` step that another step kind should own.
+5. If a needed step kind or assertion kind is missing, add it to bankai under
+   `src/steps/` or `src/assertions/`. Keep project-specific CLIs in plans unless
+   the behavior is generic enough to publish.
 
 ### Quality bar
 
@@ -222,9 +232,9 @@ Bundled inside this skill at `plans/`:
 - [`plans/smoke-shell-only.test.json`](plans/smoke-shell-only.test.json) —
   trivial pass plan: one shell step, one step-output assertion. Use this to
   verify bankai itself is wired before authoring a real plan.
-- [`plans/kash-prompt-and-assert.test.json`](plans/kash-prompt-and-assert.test.json) —
-  kash invocation pattern. Reads a prompt file, writes the response, asserts
-  on the response file. Most product test plans look like this.
+- [`plans/external-cli-prompt-and-assert.test.json`](plans/external-cli-prompt-and-assert.test.json) —
+  external CLI invocation pattern. Reads a prompt file, writes the response,
+  asserts on the response file. Most product test plans look like this.
 - [`plans/multi-step-fail-fast.test.json`](plans/multi-step-fail-fast.test.json) —
   multi-step plan with a deliberate mid-pipeline failure to demonstrate
   envelope shape on partial runs.

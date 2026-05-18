@@ -3,9 +3,9 @@ import type { Env } from "../env-runtime/env.js";
 
 // ToolPlugin: open extension point for invoking external CLIs deterministically
 // from a scenario step. While step kinds and assertion kinds are intentionally
-// closed, a tool plugin teaches bankai how to invoke a specific binary like
-// kash, with all the tactical knowledge (entrypoint discovery, retry, refresh,
-// argv composition) owned by the plugin and never by skill text. Invariants
+// closed, a tool plugin teaches bankai how to invoke a reusable external
+// capability, with tactical knowledge such as entrypoint discovery, retry, and
+// argv composition owned by the plugin and never by skill text. Invariants
 // the next editor must preserve:
 //   1. invoke must be deterministic over (env, config, invocation). Given the
 //      same inputs and a healthy binary it must always produce the same

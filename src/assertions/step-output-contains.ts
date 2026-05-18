@@ -15,7 +15,7 @@ export const StepOutputContainsAssertionV1Schema = z.object({
   stepId: z.string().min(1),
   stream: z.enum(["stdout", "stderr"]).default("stdout"),
   text: z.string().min(1),
-});
+}).strict();
 
 export type StepOutputContainsAssertionV1 = z.infer<typeof StepOutputContainsAssertionV1Schema>;
 

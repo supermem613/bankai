@@ -59,6 +59,10 @@ export interface CreateRunLoggerOptions {
   runId?: string;
 }
 
+export function defaultBankaiLogsDir(env: Env): string {
+  return join(env.home, ".bankai", "logs");
+}
+
 function shortId(): string {
   return randomBytes(4).toString("hex");
 }

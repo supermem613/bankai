@@ -46,7 +46,7 @@ export const ManagedProcessConfigSchema = z.object({
   cwd: z.string().min(1).default("."),
   logFile: z.string().min(1),
   env: z.record(z.string(), z.string()).optional(),
-});
+}).strict();
 
 export type ManagedProcessConfig = z.infer<typeof ManagedProcessConfigSchema>;
 

@@ -46,16 +46,18 @@ async function pickFreePort(): Promise<number> {
 
 describe("orchestrator: persistent plans", () => {
   let tmp: string;
+  let env: ReturnType<typeof createNodeEnv>;
 
   beforeEach(() => {
     tmp = mkdtempSync(join(tmpdir(), "bankai-run-persist-"));
+    const baseEnv = createNodeEnv();
+    env = { ...baseEnv, home: tmp };
   });
 
   afterEach(async () => {
     // Best-effort: force-stop anything we registered so we never leak
     // a server past the test.
     try {
-      const env = createNodeEnv();
       const store = createRegistryStore({ env });
       const file = await store.read();
       for (const entry of Object.values(file.entries)) {
@@ -108,10 +110,21 @@ describe("orchestrator: persistent plans", () => {
       }),
     );
 
-    const env = createNodeEnv();
-
     const startEnv = await runRunCommand({ planPath, env, logDir: join(tmp, "logs"), repoRoot: tmp });
     assert.equal(startEnv.ok, true, JSON.stringify(startEnv.failure ?? startEnv.steps));
+    assert.equal(startEnv.registry?.length, 1);
+    const runEntry = (startEnv.registry as Array<{
+      name: string;
+      alive: boolean;
+      status?: { phase?: string; ready?: boolean; done?: boolean };
+      logs?: { run?: { path?: string; exists?: boolean } };
+    }>)[0];
+    assert.equal(runEntry.name, "bankai-test-node-server");
+    assert.equal(runEntry.alive, true);
+    assert.equal(runEntry.status?.phase, "running");
+    assert.equal(runEntry.status?.ready, false);
+    assert.equal(runEntry.status?.done, false);
+    assert.equal(runEntry.logs?.run?.exists, true);
 
     const status = await runStatusCommand({ name: "bankai-test-node-server", env, logDir: join(tmp, "logs"), repoRoot: tmp });
     assert.equal(status.ok, true);
@@ -158,7 +171,6 @@ describe("orchestrator: persistent plans", () => {
         ],
       }),
     );
-    const env = createNodeEnv();
     const first = await runRunCommand({ planPath, env, logDir: join(tmp, "logs"), repoRoot: tmp });
     assert.equal(first.ok, true);
     try {
@@ -167,6 +179,42 @@ describe("orchestrator: persistent plans", () => {
       assert.match(second.failure?.reason ?? "", /already running|in_progress|already/i);
     } finally {
       await runStopCommand({ name: "bankai-test-double", force: true, env, logDir: join(tmp, "logs"), repoRoot: tmp });
+    }
+  });
+
+  it("refuses to stop a live PID when the fingerprint does not match", async () => {
+    const store = createRegistryStore({ env });
+    await store.putEntry({
+      name: "bankai-test-fingerprint-mismatch",
+      planName: "fingerprint-mismatch",
+      planPath: join(tmp, "fingerprint.plan.json"),
+      cwd: tmp,
+      registeredAt: env.clock.isoNow(),
+      pid: process.pid,
+      command: "wrong-command",
+      args: [],
+      workDir: tmp,
+      envKind: "managed-process",
+      logFile: join(tmp, "fingerprint.log"),
+      logStartOffset: 0,
+      fingerprint: {
+        creationTime: "not-the-current-process",
+        commandLine: "not-the-current-process",
+      },
+    });
+    try {
+      const stopped = await runStopCommand({
+        name: "bankai-test-fingerprint-mismatch",
+        env,
+        logDir: join(tmp, "logs"),
+        repoRoot: tmp,
+      });
+      assert.equal(stopped.ok, false);
+      assert.equal(stopped.failure?.stage, "fingerprint");
+      const entry = await store.getEntry("bankai-test-fingerprint-mismatch");
+      assert.ok(entry);
+    } finally {
+      await store.removeEntry("bankai-test-fingerprint-mismatch");
     }
   });
 });

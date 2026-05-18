@@ -1,7 +1,7 @@
 import { z } from "zod";
-import { resolve as resolvePath, isAbsolute as isAbsolutePath } from "node:path";
 import { registerStep, type StepContext, type StepRunResult } from "./registry.js";
 import { getTool } from "../tools/registry.js";
+import { BindingPathRefSchema, resolveBindingPath } from "../bindings.js";
 
 // tool step kind: closed step kind that dispatches to the OPEN registry
 // of tool plugins under src/tools/. The outer schema is closed; only
@@ -15,10 +15,11 @@ export const ToolStepV1Schema = z
     tool: z.string().min(1),
     config: z.unknown().optional(),
     invocation: z.unknown().optional(),
-    cwd: z.string().optional(),
+    cwd: BindingPathRefSchema.optional(),
     timeoutMs: z.number().int().positive().default(60_000),
     continueOnFail: z.boolean().optional(),
   })
+  .strict()
   .superRefine((spec, ctx) => {
     const plugin = getTool(spec.tool);
     if (!plugin) {
@@ -62,11 +63,7 @@ async function runToolStep(spec: ToolStepV1, ctx: StepContext): Promise<StepRunR
   const config = plugin.configSchema.parse(spec.config ?? {});
   const invocation = plugin.invocationSchema.parse(spec.invocation ?? {});
 
-  const resolvedCwd = spec.cwd
-    ? isAbsolutePath(spec.cwd)
-      ? spec.cwd
-      : resolvePath(ctx.workDir, spec.cwd)
-    : ctx.workDir;
+  const resolvedCwd = resolveBindingPath(spec.cwd, { workDir: ctx.workDir, bindings: ctx.bindings });
 
   ctx.logger.emit("step.tool.invoke", {
     stepId: spec.id,

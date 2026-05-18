@@ -9,9 +9,9 @@ import { registerEnvironment } from "./registry.js";
 //   2. It is the implicit default when a scenario omits the environment
 //      field, so the simplest test scenarios stay simple.
 // Capabilities are intentionally empty. A step that wants ports or endpoints
-// needs a real environment plugin like augloop.
+// needs a real environment plugin.
 
-const NoopConfigSchema = z.object({}).passthrough();
+const NoopConfigSchema = z.object({}).strict();
 
 export interface NoopCapabilities {
   ready: true;

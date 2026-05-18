@@ -1,0 +1,41 @@
+{
+  "schemaVersion": "1",
+  "name": "external-cli-prompt-and-assert",
+  "description": "Canonical product-test pattern. A shell step writes a prompt file. A shell step invokes an external CLI with that prompt and writes the response to an out file. An assert-text-contains step checks the response.",
+  "steps": [
+    {
+      "kind": "shell",
+      "id": "write-prompt",
+      "command": "node",
+      "args": [
+        "-e",
+        "require('node:fs').writeFileSync('prompt.txt', 'Summarize the available commands.')"
+      ],
+      "timeoutMs": 5000
+    },
+    {
+      "kind": "shell",
+      "id": "ask-cli",
+      "command": "agent-cli",
+      "args": [
+        "prompt",
+        "--prompt-file",
+        "prompt.txt",
+        "--out",
+        "response.txt"
+      ],
+      "resolveCommand": true,
+      "retries": 1,
+      "timeoutMs": 180000
+    },
+    {
+      "kind": "assert",
+      "id": "response-mentions-commands",
+      "assertion": "assert-text-contains",
+      "config": {
+        "file": "response.txt",
+        "text": "commands"
+      }
+    }
+  ]
+}

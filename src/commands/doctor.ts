@@ -1,7 +1,6 @@
-import { resolve } from "node:path";
 import { unlink } from "node:fs/promises";
 import { createNodeEnv, type Env } from "../env-runtime/env.js";
-import { createRunLogger } from "../log/jsonl.js";
+import { createRunLogger, defaultBankaiLogsDir } from "../log/jsonl.js";
 import { resolveRepoRoot } from "../repo-root.js";
 import { createRegistryStore } from "../registry/store.js";
 import { isProcessAlive } from "../process-tree.js";
@@ -47,7 +46,7 @@ export async function runDoctorCommand(opts: DoctorCommandOptions): Promise<Bank
   const logger = createRunLogger({
     env,
     command: "doctor",
-    logsDir: opts.logDir ?? resolve(repoRoot, ".bankai", "logs"),
+    logsDir: opts.logDir ?? defaultBankaiLogsDir(env),
     logFile: opts.logFile,
   });
   logger.emit("doctor.start", { planPath: opts.planPath, prune: opts.prune, repoRoot });
@@ -68,9 +67,9 @@ export async function runDoctorCommand(opts: DoctorCommandOptions): Promise<Bank
   const stepKinds = listRegisteredStepKinds();
   checks.push({
     name: "step-registry",
-    ok: stepKinds.length >= 7,
+    ok: stepKinds.length >= 8,
     detail: `${stepKinds.length} step kinds registered: ${stepKinds.join(", ")}`,
-    hint: stepKinds.length >= 7 ? undefined : "core step kinds missing; bankai install is corrupt",
+    hint: stepKinds.length >= 8 ? undefined : "core step kinds missing; bankai install is corrupt",
   });
 
   // 3. Per-env-plugin doctor.
@@ -114,13 +113,14 @@ export async function runDoctorCommand(opts: DoctorCommandOptions): Promise<Bank
   let pruned = 0;
   for (const entry of Object.values(file.entries)) {
     const alive = isProcessAlive(entry.pid);
+    const willPrune = !alive && opts.prune === true;
     checks.push({
       name: `registry:${entry.name}`,
-      ok: alive,
-      detail: `pid ${entry.pid} (${entry.envKind}) ${alive ? "alive" : "DEAD"}`,
-      hint: alive ? undefined : opts.prune ? "removed by --prune" : "rerun with --prune to clean up",
+      ok: alive || willPrune,
+      detail: `pid ${entry.pid} (${entry.envKind}) ${alive ? "alive" : willPrune ? "DEAD; removed by --prune" : "DEAD"}`,
+      hint: alive || willPrune ? undefined : "rerun with --prune to clean up",
     });
-    if (!alive && opts.prune) {
+    if (willPrune) {
       await store.removeEntry(entry.name);
       pruned += 1;
       logger.emit("registry.remove", { name: entry.name, pid: entry.pid, reason: "doctor.prune" });

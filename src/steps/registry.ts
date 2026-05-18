@@ -5,11 +5,13 @@ import type { LifecycleScope } from "../environments/lifecycle-scope.js";
 import type { RegistryStore } from "../registry/store.js";
 import type { HandleStore } from "../orchestrator/handle-store.js";
 import type { ProcessHandle } from "../registry/types.js";
+import type { ResolvedBindings } from "../bindings.js";
 import type {
   AssertStepResultSchema,
   WaitStepResultSchema,
   StopStepResultSchema,
   RunPlanStepResultSchema,
+  AttachedProcessStepResultSchema,
 } from "../plan/envelope.js";
 
 // StepHandler registry: closed set of step kinds (shell, tool, assert,
@@ -33,10 +35,16 @@ export interface StepContext {
   env: Env;
   /** Working directory for resolving relative paths inside step config. Plan-relative. */
   workDir: string;
+  /** Resolved run-time bindings declared by the plan and supplied by the caller. */
+  bindings: ResolvedBindings;
   planName: string;
   planPath: string;
   signal: AbortSignal;
   logger: RunLogger;
+  /** True only when the CLI caller explicitly confirmed this run owns a visible attached terminal. */
+  visibleAttachedTerminal: boolean;
+  /** Internal one-shot event path used by a parent launcher waiting for attached readiness. */
+  visibleReadyEventFile?: string;
   /** Per-run map of step id to ProcessHandle for non-registered setup steps. */
   handles: HandleStore;
   /** Per-user registry store for setup steps that use registerAs. */
@@ -86,6 +94,7 @@ export interface StepRunResult {
   wait?: z.infer<typeof WaitStepResultSchema>;
   stop?: z.infer<typeof StopStepResultSchema>;
   runPlan?: z.infer<typeof RunPlanStepResultSchema>;
+  attachedProcess?: z.infer<typeof AttachedProcessStepResultSchema>;
 }
 
 export interface StepHandler<S extends z.ZodTypeAny> {
