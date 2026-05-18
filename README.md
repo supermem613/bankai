@@ -35,6 +35,7 @@ JSON envelope for success, failure, timing, and logs.
 - *"Give this agent one command that starts the server, waits for readiness, and
   returns the handle it can later stop"*
 - *"Use a machine-readable bindings file instead of hardcoded local paths"*
+- *"Show me the Bankai command schema so I know what an agent can call"*
 - *"Tell me the plan schema so I can generate a valid Bankai plan"*
 - *"Prune stale runtime handles before starting a new loop"*
 - *"Return structured failure details that an agent can route on without parsing
@@ -64,7 +65,8 @@ npm link    # makes `bankai` available globally
   registry state with `--prune`.
 - `update` - self-update this Bankai git checkout with `git pull --ff-only`,
   dependency install, and rebuild when changes arrive.
-- `schema` - print the JSON shape for plans or bindings.
+- `schema` - print the Bankai command surface by default. Use `schema plan` or
+  `schema bindings` for plan-authoring internals.
 
 Bankai emits JSON envelopes by default. `--json` remains accepted as a
 deprecated compatibility no-op.

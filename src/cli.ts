@@ -24,7 +24,7 @@ import { runStopCommand } from "./commands/stop.js";
 import { runDoctorCommand } from "./commands/doctor.js";
 import { runUpdateCommand } from "./commands/update.js";
 import { emitEnvelope } from "./commands/format.js";
-import { schemaDocument, type SchemaKind } from "./commands/schema.js";
+import { normalizeSchemaKind, schemaDocument } from "./commands/schema.js";
 import { createNodeEnv } from "./env-runtime/env.js";
 import { loadPlan } from "./plan/load.js";
 import { defaultBankaiLogsDir, resolveLogFilePath } from "./log/jsonl.js";
@@ -299,15 +299,16 @@ program
   });
 
 program
-  .command("schema <kind>")
-  .description("Print the JSON shape for plan or bindings")
-  .addHelpText("after", "\n\nKinds:\n  plan       Bankai plan JSON shape\n  bindings   JSON array shape for --bindings-file and --bindings-json\n")
-  .action((kind: string) => {
-    if (kind !== "plan" && kind !== "bindings") {
-      process.stderr.write(`unknown schema kind "${kind}". Expected "plan" or "bindings".\n`);
+  .command("schema [kind]")
+  .description("Print the Bankai command schema, or explicit plan/bindings schemas")
+  .addHelpText("after", "\n\nKinds:\n  commands   Bankai command surface (default)\n  plan       Bankai plan JSON shape\n  bindings   JSON array shape for --bindings-file and --bindings-json\n")
+  .action((kind: string | undefined) => {
+    const normalized = normalizeSchemaKind(kind);
+    if (!normalized) {
+      process.stderr.write(`unknown schema kind "${kind}". Expected "commands", "plan", or "bindings".\n`);
       process.exit(1);
     }
-    process.stdout.write(JSON.stringify(schemaDocument(kind as SchemaKind), null, 2) + "\n");
+    process.stdout.write(JSON.stringify(schemaDocument(normalized), null, 2) + "\n");
   });
 
 if (process.argv.slice(2).length === 0) {

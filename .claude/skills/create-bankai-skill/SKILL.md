@@ -25,6 +25,7 @@ bankai run <plan>
 bankai status <name>
 bankai logs <name>
 bankai stop <name>
+bankai schema plan
 ```
 
 ## When to run
@@ -66,9 +67,10 @@ test or validation workflows.
    - which Bankai command to call
    - how to interpret the envelope
    - what not to do
-5. Validate with `bankai doctor --plan <plan>`.
-6. Run with `bankai run <plan>`.
-7. For dev-loop plans, verify stop with `bankai stop <name>`.
+5. Use `bankai schema plan` if the plan shape is uncertain.
+6. Validate with `bankai doctor --plan <plan>`.
+7. Run with `bankai run <plan>`.
+8. For dev-loop plans, verify stop with `bankai stop <name>`.
 
 ## Skill template
 

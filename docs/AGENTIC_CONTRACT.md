@@ -8,8 +8,9 @@ the product API and plans as the portable workflow description.
 - `src/cli.ts` defines the command surface.
 - `src/plan/schema.ts` defines valid plan JSON.
 - `src/plan/envelope.ts` defines the run/status/logs/stop envelope shape.
-- `bankai schema plan` and `bankai schema bindings` expose machine-readable
-  schema references for agent-generated plans and bindings.
+- `bankai schema` exposes the machine-readable command surface.
+- `bankai schema plan` and `bankai schema bindings` expose plan-authoring
+  internals for generated plans and bindings.
 
 ## Output contract
 
@@ -53,7 +54,7 @@ bankai logs [name]
 bankai stop <name>
 bankai doctor [--plan <path>] [--prune]
 bankai update
-bankai schema plan|bindings
+bankai schema [commands|plan|bindings]
 ```
 
 `--json` is accepted for compatibility, but JSON is the default output format.
