@@ -10,6 +10,7 @@ import type {
 import type { ProcessHandle } from "../registry/types.js";
 import { registerEnvironment } from "./registry.js";
 import { captureFingerprint } from "../fingerprint.js";
+import { CommandNotFoundError, resolveCommand, type ResolvedCommand } from "../spawn/resolve-command.js";
 
 // managed-process: a generic spawn-and-track environment plugin. A
 // `setup` step that names this plugin spawns a long-lived child process
@@ -87,11 +88,15 @@ async function getFileSizeOrZero(path: string): Promise<number> {
 }
 
 // The relay script is a self-contained CJS module that:
-//   1. Spawns the real command with stdin piped
-//   2. Watches a trigger file directory
-//   3. When the trigger file appears, reads it and writes content to
+//   1. Reads a JSON-encoded spawn spec from argv[2] containing the resolved
+//      command, args, and windowsVerbatimArguments. The spec is produced by
+//      resolveCommand in the parent so the relay stays dumb about
+//      cross-platform shim conventions.
+//   2. Spawns the real command with stdin piped
+//   3. Watches a trigger file directory
+//   4. When the trigger file appears, reads it and writes content to
 //      the child's stdin, then closes stdin
-//   4. Exits with the child's exit code
+//   5. Exits with the child's exit code
 // This keeps the child's stdin open and reachable from a separate
 // bankai stop process via the filesystem — fully cross-platform.
 function generateRelayScript(triggerFilePath: string): string {
@@ -102,17 +107,23 @@ const { watch, readFileSync, existsSync } = require('fs');
 const { dirname, basename } = require('path');
 
 const triggerPath = ${escaped};
-const cmd = process.argv[2];
-const args = process.argv.slice(3);
+let spec;
+try {
+  spec = JSON.parse(process.argv[2] || '');
+} catch (err) {
+  process.stderr.write('bankai relay: invalid spec json: ' + err.message + '\\n');
+  process.exit(1);
+}
 
-if (!cmd) {
+if (!spec || !spec.command) {
   process.stderr.write('bankai relay: no command specified\\n');
   process.exit(1);
 }
 
-const child = spawn(cmd, args, {
+const child = spawn(spec.command, spec.args || [], {
   stdio: ['pipe', 'inherit', 'inherit'],
   windowsHide: true,
+  windowsVerbatimArguments: !!spec.windowsVerbatimArguments,
 });
 
 child.on('error', (err) => {
@@ -238,6 +249,38 @@ export const managedProcessPlugin: EnvironmentPlugin<typeof ManagedProcessConfig
     const logFileAbs = await ensureLogPath(cwdAbs, config.logFile);
     const logStartOffset = await getFileSizeOrZero(logFileAbs);
 
+    // Resolve cross-platform shim conventions up front so both the direct
+    // and stdin-relay spawn paths use the same effective command. On Windows
+    // this turns bare `rush` into `cmd.exe /d /s /c "rush.cmd ..."`. On POSIX
+    // it walks PATH to the absolute executable. A miss throws
+    // CommandNotFoundError with searched extensions + directories.
+    let resolved: ResolvedCommand;
+    try {
+      resolved = resolveCommand(config.command, config.args, ctx.env);
+    } catch (err) {
+      if (err instanceof CommandNotFoundError) {
+        ctx.logger?.emit("managed-process.resolve-failed", {
+          requestedCommand: config.command,
+          detail: err.message,
+          searchedExtensions: err.searchedExtensions,
+          searchedDirectories: err.searchedDirectories,
+        });
+      }
+      throw err;
+    }
+
+    const rewritten = resolved.command !== config.command || resolved.args !== config.args;
+    ctx.logger?.emit("managed-process.spawn", {
+      requestedCommand: config.command,
+      requestedArgs: config.args,
+      resolvedCommand: resolved.detail,
+      command: resolved.command,
+      args: resolved.args,
+      windowsVerbatimArguments: resolved.windowsVerbatimArguments ?? false,
+      cwd: cwdAbs,
+      stdinStop: config.stop?.kind === "stdin",
+    });
+
     // Open the log file in append mode. We get a file handle, then dup
     // its underlying fd into the child's stdout and stderr. After spawn
     // we close OUR handle so bankai does not keep the file pinned open.
@@ -259,7 +302,12 @@ export const managedProcessPlugin: EnvironmentPlugin<typeof ManagedProcessConfig
         const relayPath = join(stateDir, `relay-${Date.now()}.cjs`);
         await writeFile(relayPath, relayScript, "utf8");
 
-        const child = spawn(process.execPath, [relayPath, config.command, ...config.args], {
+        const relaySpec = JSON.stringify({
+          command: resolved.command,
+          args: resolved.args,
+          windowsVerbatimArguments: resolved.windowsVerbatimArguments ?? false,
+        });
+        const child = spawn(process.execPath, [relayPath, relaySpec], {
           cwd: cwdAbs,
           detached: true,
           stdio: ["ignore", logHandle.fd, logHandle.fd],
@@ -278,12 +326,13 @@ export const managedProcessPlugin: EnvironmentPlugin<typeof ManagedProcessConfig
         child.unref();
       } else {
         // Standard path: no stdin stop strategy. Stdin is ignored.
-        const child = spawn(config.command, config.args, {
+        const child = spawn(resolved.command, resolved.args, {
           cwd: cwdAbs,
           detached: true,
           stdio: ["ignore", logHandle.fd, logHandle.fd],
           env: config.env ? { ...ctx.env.env, ...config.env } : { ...ctx.env.env },
           windowsHide: true,
+          windowsVerbatimArguments: resolved.windowsVerbatimArguments,
         });
 
         const earlyErr = await waitForEarlyFailure(child);
@@ -303,14 +352,18 @@ export const managedProcessPlugin: EnvironmentPlugin<typeof ManagedProcessConfig
     const fingerprint = await captureFingerprint({ pid, env: ctx.env });
     const handle: ProcessHandle = {
       pid,
-      command: config.command,
-      args: config.args,
+      command: resolved.command,
+      args: resolved.args,
       workDir: cwdAbs,
       envKind: "managed-process",
       logFile: logFileAbs,
       logStartOffset,
       fingerprint,
     };
+    if (rewritten) {
+      handle.originalCommand = config.command;
+      handle.originalArgs = config.args;
+    }
 
     if (config.stop?.kind === "stdin" && stdinTriggerFile) {
       handle.stop = {

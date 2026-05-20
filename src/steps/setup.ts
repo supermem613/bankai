@@ -184,6 +184,7 @@ async function runPersistentSetup(
             planName: ctx.planName,
             signal: ac.signal,
             timeoutMs: spec.setupTimeoutMs,
+            logger: ctx.logger,
           },
           config,
         );
@@ -197,6 +198,8 @@ async function runPersistentSetup(
           pid: newHandle.pid,
           command: newHandle.command,
           args: newHandle.args,
+          originalCommand: newHandle.originalCommand,
+          originalArgs: newHandle.originalArgs,
           workDir: newHandle.workDir,
           logFile: newHandle.logFile,
           logStartOffset: newHandle.logStartOffset,

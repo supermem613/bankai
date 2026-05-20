@@ -60,6 +60,11 @@ export const ProcessHandleSchema = z.object({
   pid: z.number().int().positive(),
   command: z.string().min(1),
   args: z.array(z.string()).default([]),
+  /** When resolveCommand rewrites the spawn (e.g. bare `rush` → `cmd.exe /d /s /c "rush.cmd ..."`),
+   * we preserve the user's original spec so `bankai status` can show both the requested
+   * and the actually-spawned form. Optional; only set when resolution changed the command. */
+  originalCommand: z.string().min(1).optional(),
+  originalArgs: z.array(z.string()).optional(),
   workDir: z.string().min(1),
   envKind: z.string().min(1),
   logFile: z.string().min(1),

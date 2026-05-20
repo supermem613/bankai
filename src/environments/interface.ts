@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { Env } from "../env-runtime/env.js";
 import type { LifecycleScope } from "./lifecycle-scope.js";
 import type { ProcessHandle } from "../registry/types.js";
+import type { RunLogger } from "../log/jsonl.js";
 
 // EnvironmentPlugin: the open extension point for the bankai engine. While
 // step kinds and assertion kinds are intentionally closed, an environment
@@ -73,4 +74,7 @@ export interface LongRunningContext {
   planName: string;
   signal: AbortSignal;
   timeoutMs: number;
+  /** Optional run logger so environment plugins can emit JSONL events for
+   * command resolution, spawn, and similar lifecycle observability. */
+  logger?: RunLogger;
 }

@@ -1,12 +1,13 @@
 import { z } from "zod";
 import { spawn } from "node:child_process";
-import { createWriteStream, existsSync, readFileSync, statSync } from "node:fs";
+import { createWriteStream, readFileSync, statSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
-import { delimiter, dirname, join } from "node:path";
+import { dirname } from "node:path";
 import { registerStep, type StepContext, type StepRunResult } from "./registry.js";
 import { BindingPathRefSchema, BindingValueRefSchema, interpolateBindings, resolveBindingPath, resolveBindingValueRef } from "../bindings.js";
 import type { Env } from "../env-runtime/env.js";
 import { terminateProcessTree } from "../process-tree.js";
+import { CommandNotFoundError, resolveCommand } from "../spawn/resolve-command.js";
 
 // shell step kind: spawn a single short-lived command, capture stdout
 // and stderr to memory and stream them line-by-line into the JSONL
@@ -68,30 +69,6 @@ interface ResolvedShellCommand {
   windowsVerbatimArguments?: boolean;
 }
 
-function findOnPath(env: Env, command: string): string | undefined {
-  if (command.includes("\\") || command.includes("/")) {
-    return existsSync(command) ? command : undefined;
-  }
-  const pathVar = env.env.PATH ?? env.env.Path ?? "";
-  const dirs = pathVar.split(delimiter).filter((dir) => dir.length > 0);
-  const exts = env.platform === "win32"
-    ? (env.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").map((ext) => ext.toLowerCase())
-    : [""];
-  for (const dir of dirs) {
-    for (const ext of exts) {
-      const candidate = join(dir, command + ext);
-      if (existsSync(candidate)) {
-        return candidate;
-      }
-    }
-  }
-  return undefined;
-}
-
-function quoteCmdArg(value: string): string {
-  return `"${value.replace(/"/g, '""')}"`;
-}
-
 function resolveShellArgs(spec: ShellStepV1, ctx: StepContext): string[] {
   return spec.args.map((arg) => {
     if (typeof arg === "object") {
@@ -113,22 +90,27 @@ export function resolveShellCommand(spec: ShellStepV1, env: Env, args: string[] 
   if (!spec.resolveCommand) {
     return { command: spec.command, args, detail: spec.command };
   }
-  const discovered = findOnPath(env, spec.command) ?? spec.command;
-  if (env.platform === "win32" && discovered.toLowerCase().endsWith(".cmd") && existsSync(discovered)) {
-    const cmd = env.env.ComSpec ?? env.env.COMSPEC ?? "cmd.exe";
-    const commandLine = [quoteCmdArg(discovered), ...args.map(quoteCmdArg)].join(" ");
-    return {
-      command: cmd,
-      args: ["/d", "/s", "/c", `"${commandLine}"`],
-      detail: `${cmd} /d /s /c "${commandLine}"`,
-      windowsVerbatimArguments: true,
-    };
-  }
-  return { command: discovered, args, detail: discovered };
+  const r = resolveCommand(spec.command, args, env);
+  return {
+    command: r.command,
+    args: r.args,
+    detail: r.detail,
+    windowsVerbatimArguments: r.windowsVerbatimArguments,
+  };
 }
 
 async function runShellAttempt(spec: ShellStepV1, ctx: StepContext, resolvedCwd: string, attempt: number): Promise<StepRunResult> {
-  const resolvedCommand = resolveShellCommand(spec, ctx.env, resolveShellArgs(spec, ctx));
+  let resolvedCommand: ResolvedShellCommand;
+  try {
+    resolvedCommand = resolveShellCommand(spec, ctx.env, resolveShellArgs(spec, ctx));
+  } catch (err) {
+    const isMissing = err instanceof CommandNotFoundError;
+    return {
+      ok: false,
+      error: `attempt ${attempt} failed to ${isMissing ? "resolve" : "prepare"} command: ${(err as Error).message}`,
+      shell: { stdout: "", stderr: "", stdoutBytes: 0, stderrBytes: 0 },
+    };
+  }
   const stdoutFile = spec.stdoutFile
     ? resolveBindingPath(spec.stdoutFile, { workDir: ctx.workDir, bindings: ctx.bindings })
     : undefined;

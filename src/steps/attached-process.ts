@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { existsSync, watch, type FSWatcher } from "node:fs";
-import { delimiter, dirname, join } from "node:path";
+import { dirname, join } from "node:path";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import { z } from "zod";
@@ -10,6 +10,7 @@ import { ReadinessProbeRefSchema } from "../plan/schema.js";
 import { getReadinessProbe } from "../readiness/registry.js";
 import { evaluateReadiness } from "../readiness/evaluate.js";
 import type { ProcessHandle, ReadinessObservation } from "../registry/types.js";
+import { CommandNotFoundError, resolveCommand } from "../spawn/resolve-command.js";
 
 const WINDOWS_CTRL_C_EXIT = -1_073_741_510;
 const WINDOWS_CTRL_C_EXIT_UNSIGNED = 3_221_225_786;
@@ -107,43 +108,17 @@ interface MatchedOutput {
   line: string;
 }
 
-function findOnPath(ctx: StepContext, command: string): string | undefined {
-  const pathVar = ctx.env.env.PATH ?? ctx.env.env.Path ?? "";
-  const dirs = pathVar.split(delimiter).filter((d) => d.length > 0);
-  const exts = ctx.env.platform === "win32"
-    ? (ctx.env.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").map((ext) => ext.toLowerCase())
-    : [""];
-  for (const dir of dirs) {
-    for (const ext of exts) {
-      const candidate = join(dir, command + ext);
-      if (existsSync(candidate)) {
-        return candidate;
-      }
-    }
-  }
-  return undefined;
-}
-
-function quoteCmdArg(value: string): string {
-  return `"${value.replace(/"/g, '""')}"`;
-}
-
 export function resolveAttachedCommand(spec: AttachedProcessStepV1, ctx: StepContext): ResolvedCommand {
   if (!spec.resolveCommand) {
     return { command: spec.command, args: spec.args, detail: spec.command };
   }
-  const discovered = findOnPath(ctx, spec.command) ?? spec.command;
-  if (ctx.env.platform === "win32" && discovered.toLowerCase().endsWith(".cmd") && existsSync(discovered)) {
-    const cmd = ctx.env.env.ComSpec ?? ctx.env.env.COMSPEC ?? "cmd.exe";
-    const commandLine = [quoteCmdArg(discovered), ...spec.args.map(quoteCmdArg)].join(" ");
-    return {
-      command: cmd,
-      args: ["/d", "/s", "/c", `"${commandLine}"`],
-      detail: `${cmd} /d /s /c "${commandLine}"`,
-      windowsVerbatimArguments: true,
-    };
-  }
-  return { command: discovered, args: spec.args, detail: discovered };
+  const r = resolveCommand(spec.command, spec.args, ctx.env);
+  return {
+    command: r.command,
+    args: r.args,
+    detail: r.detail,
+    windowsVerbatimArguments: r.windowsVerbatimArguments,
+  };
 }
 
 function findOutputMatch(
@@ -167,7 +142,20 @@ function findOutputMatch(
 
 async function runAttachedProcess(spec: AttachedProcessStepV1, ctx: StepContext): Promise<StepRunResult> {
   const resolvedCwd = resolveBindingPath(spec.cwd, { workDir: ctx.workDir, bindings: ctx.bindings });
-  const resolvedCommand = resolveAttachedCommand(spec, ctx);
+  let resolvedCommand: ResolvedCommand;
+  try {
+    resolvedCommand = resolveAttachedCommand(spec, ctx);
+  } catch (err) {
+    const detail = err instanceof CommandNotFoundError
+      ? err.message
+      : `failed to prepare command: ${(err as Error).message}`;
+    ctx.logger.emit("step.attached-process.resolve-failed", { stepId: spec.id, detail });
+    return {
+      ok: false,
+      error: detail,
+      attachedProcess: { stoppedBy: "exit", escalated: false, detail },
+    };
+  }
   const expectsReady = spec.readyWhen.length > 0 || spec.verifyReady.length > 0;
   const registerName = spec.registerAs ?? ctx.planName;
   const controlDir = join(ctx.env.home, ".bankai", "state", "attached", registerName);
