@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { spawn } from "node:child_process";
-import { mkdir, open as openFile, stat } from "node:fs/promises";
-import { dirname, isAbsolute, resolve } from "node:path";
+import { mkdir, open as openFile, stat, writeFile } from "node:fs/promises";
+import { dirname, isAbsolute, resolve, join } from "node:path";
 import type {
   EnvironmentPlugin,
   LongRunningContext,
@@ -39,6 +39,23 @@ import { captureFingerprint } from "../fingerprint.js";
 //      a scoped helper should use a different plugin.
 //   6. NEVER persist the env block in ProcessHandle. Secrets in env
 //      vars must not leak through the registry.
+//   7. When stop.kind is "stdin", the child is spawned through a thin
+//      relay wrapper that holds the real child's stdin pipe open. The
+//      relay watches a trigger file. When bankai stop writes the
+//      configured input to the trigger file, the relay pipes it to the
+//      child's stdin. This is cross-platform: no FIFOs, no platform-
+//      specific named pipes. The relay is in the same process group so
+//      process-tree termination still works as fallback.
+
+// Plan-facing stop config. The plan author declares what to send.
+// The stdinFile (trigger file) is computed at spawn time and persisted.
+export const ManagedProcessStopConfigSchema = z.object({
+  kind: z.literal("stdin"),
+  input: z.string().min(1),
+  graceMs: z.number().int().nonnegative().optional(),
+}).strict();
+
+export type ManagedProcessStopConfig = z.infer<typeof ManagedProcessStopConfigSchema>;
 
 export const ManagedProcessConfigSchema = z.object({
   command: z.string().min(1),
@@ -46,6 +63,7 @@ export const ManagedProcessConfigSchema = z.object({
   cwd: z.string().min(1).default("."),
   logFile: z.string().min(1),
   env: z.record(z.string(), z.string()).optional(),
+  stop: ManagedProcessStopConfigSchema.optional(),
 }).strict();
 
 export type ManagedProcessConfig = z.infer<typeof ManagedProcessConfigSchema>;
@@ -66,6 +84,112 @@ async function getFileSizeOrZero(path: string): Promise<number> {
     }
     throw err;
   }
+}
+
+// The relay script is a self-contained CJS module that:
+//   1. Spawns the real command with stdin piped
+//   2. Watches a trigger file directory
+//   3. When the trigger file appears, reads it and writes content to
+//      the child's stdin, then closes stdin
+//   4. Exits with the child's exit code
+// This keeps the child's stdin open and reachable from a separate
+// bankai stop process via the filesystem — fully cross-platform.
+function generateRelayScript(triggerFilePath: string): string {
+  const escaped = JSON.stringify(triggerFilePath);
+  return `'use strict';
+const { spawn } = require('child_process');
+const { watch, readFileSync, existsSync } = require('fs');
+const { dirname, basename } = require('path');
+
+const triggerPath = ${escaped};
+const cmd = process.argv[2];
+const args = process.argv.slice(3);
+
+if (!cmd) {
+  process.stderr.write('bankai relay: no command specified\\n');
+  process.exit(1);
+}
+
+const child = spawn(cmd, args, {
+  stdio: ['pipe', 'inherit', 'inherit'],
+  windowsHide: true,
+});
+
+child.on('error', (err) => {
+  process.stderr.write('bankai relay: child spawn error: ' + err.message + '\\n');
+  process.exit(1);
+});
+
+let triggered = false;
+
+function deliverInput() {
+  if (triggered) return;
+  triggered = true;
+  try {
+    const content = readFileSync(triggerPath, 'utf8');
+    child.stdin.write(content, () => {
+      child.stdin.end();
+    });
+  } catch (err) {
+    process.stderr.write('bankai relay: failed to read trigger: ' + err.message + '\\n');
+  }
+  if (watcher) watcher.close();
+}
+
+const dir = dirname(triggerPath);
+const base = basename(triggerPath);
+let watcher;
+try {
+  watcher = watch(dir, (event, filename) => {
+    if ((filename === base || !filename) && existsSync(triggerPath)) {
+      deliverInput();
+    }
+  });
+  watcher.on('error', () => {});
+} catch (err) {
+  process.stderr.write('bankai relay: watch error: ' + err.message + '\\n');
+}
+
+// Poll fallback in case fs.watch misses the event (common on some OS/fs combos)
+const pollInterval = setInterval(() => {
+  if (existsSync(triggerPath)) deliverInput();
+}, 500);
+
+child.on('exit', (code, signal) => {
+  if (watcher) watcher.close();
+  clearInterval(pollInterval);
+  if (signal) {
+    process.exit(1);
+  }
+  process.exit(code ?? 0);
+});
+`;
+}
+
+import type { ChildProcess } from "node:child_process";
+
+function waitForEarlyFailure(child: ChildProcess): Promise<Error | undefined> {
+  return new Promise<Error | undefined>((resolveErr) => {
+    const onErr = (err: Error): void => {
+      child.removeListener("exit", onExit);
+      resolveErr(err);
+    };
+    const onExit = (code: number | null): void => {
+      child.removeListener("error", onErr);
+      if (code !== null && code !== 0) {
+        resolveErr(new Error(`process exited with code ${code} immediately after spawn`));
+      } else {
+        resolveErr(undefined);
+      }
+    };
+    child.once("error", onErr);
+    child.once("exit", onExit);
+    setTimeout(() => {
+      child.removeListener("error", onErr);
+      child.removeListener("exit", onExit);
+      resolveErr(undefined);
+    }, 200);
+  });
 }
 
 export const managedProcessPlugin: EnvironmentPlugin<typeof ManagedProcessConfigSchema, never> = {
@@ -119,53 +243,65 @@ export const managedProcessPlugin: EnvironmentPlugin<typeof ManagedProcessConfig
     // we close OUR handle so bankai does not keep the file pinned open.
     const logHandle = await openFile(logFileAbs, "a");
     let pid: number;
+    let stdinTriggerFile: string | undefined;
+
     try {
-      const child = spawn(config.command, config.args, {
-        cwd: cwdAbs,
-        detached: true,
-        stdio: ["ignore", logHandle.fd, logHandle.fd],
-        env: config.env ? { ...ctx.env.env, ...config.env } : { ...ctx.env.env },
-        windowsHide: true,
-      });
-      // Listen for early failure: a missing binary surfaces as 'error'
-      // before any child output. We resolve the spawn race by waiting
-      // a microtask plus a brief tick to give the OS a chance to fail.
-      const earlyFail = new Promise<Error | undefined>((resolveErr) => {
-        const onErr = (err: Error): void => {
-          child.removeListener("exit", onExit);
-          resolveErr(err);
-        };
-        const onExit = (code: number | null): void => {
-          child.removeListener("error", onErr);
-          if (code !== null && code !== 0) {
-            resolveErr(new Error(`process exited with code ${code} immediately after spawn`));
-          } else {
-            resolveErr(undefined);
-          }
-        };
-        child.once("error", onErr);
-        child.once("exit", onExit);
-        setTimeout(() => {
-          child.removeListener("error", onErr);
-          child.removeListener("exit", onExit);
-          resolveErr(undefined);
-        }, 200);
-      });
-      const earlyErr = await earlyFail;
-      if (earlyErr) {
-        throw earlyErr;
+      if (config.stop?.kind === "stdin") {
+        // Cross-platform stdin stop: spawn a relay wrapper that holds
+        // the real child's stdin pipe and watches a trigger file. When
+        // the trigger file appears, the relay writes its content to the
+        // child's stdin. Works identically on POSIX and Windows.
+        const stateDir = join(dirname(logFileAbs), ".bankai-stdin");
+        await mkdir(stateDir, { recursive: true });
+        stdinTriggerFile = join(stateDir, `stdin-trigger-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+
+        const relayScript = generateRelayScript(stdinTriggerFile);
+        const relayPath = join(stateDir, `relay-${Date.now()}.cjs`);
+        await writeFile(relayPath, relayScript, "utf8");
+
+        const child = spawn(process.execPath, [relayPath, config.command, ...config.args], {
+          cwd: cwdAbs,
+          detached: true,
+          stdio: ["ignore", logHandle.fd, logHandle.fd],
+          env: config.env ? { ...ctx.env.env, ...config.env } : { ...ctx.env.env },
+          windowsHide: true,
+        });
+
+        const earlyErr = await waitForEarlyFailure(child);
+        if (earlyErr) {
+          throw earlyErr;
+        }
+        if (typeof child.pid !== "number") {
+          throw new Error("spawn did not return a pid");
+        }
+        pid = child.pid;
+        child.unref();
+      } else {
+        // Standard path: no stdin stop strategy. Stdin is ignored.
+        const child = spawn(config.command, config.args, {
+          cwd: cwdAbs,
+          detached: true,
+          stdio: ["ignore", logHandle.fd, logHandle.fd],
+          env: config.env ? { ...ctx.env.env, ...config.env } : { ...ctx.env.env },
+          windowsHide: true,
+        });
+
+        const earlyErr = await waitForEarlyFailure(child);
+        if (earlyErr) {
+          throw earlyErr;
+        }
+        if (typeof child.pid !== "number") {
+          throw new Error("spawn did not return a pid");
+        }
+        pid = child.pid;
+        child.unref();
       }
-      if (typeof child.pid !== "number") {
-        throw new Error("spawn did not return a pid");
-      }
-      pid = child.pid;
-      child.unref();
     } finally {
       await logHandle.close();
     }
 
     const fingerprint = await captureFingerprint({ pid, env: ctx.env });
-    return {
+    const handle: ProcessHandle = {
       pid,
       command: config.command,
       args: config.args,
@@ -175,6 +311,17 @@ export const managedProcessPlugin: EnvironmentPlugin<typeof ManagedProcessConfig
       logStartOffset,
       fingerprint,
     };
+
+    if (config.stop?.kind === "stdin" && stdinTriggerFile) {
+      handle.stop = {
+        kind: "stdin",
+        input: config.stop.input,
+        graceMs: config.stop.graceMs,
+        stdinFile: stdinTriggerFile,
+      };
+    }
+
+    return handle;
   },
 };
 

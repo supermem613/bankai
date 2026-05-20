@@ -201,6 +201,7 @@ async function runPersistentSetup(
           logFile: newHandle.logFile,
           logStartOffset: newHandle.logStartOffset,
           fingerprint: newHandle.fingerprint,
+          stop: newHandle.stop,
         };
         const nextEntries = { ...current.entries, [registerAs]: entry };
         ctx.logger.emit("registry.put", { name: registerAs, pid: entry.pid, envKind: entry.envKind });

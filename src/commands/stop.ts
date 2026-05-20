@@ -6,6 +6,7 @@ import { createRunLogger, defaultBankaiLogsDir } from "../log/jsonl.js";
 import { createRegistryStore } from "../registry/store.js";
 import { isProcessAlive, listProcessTreePids, terminateProcessTree, terminateProcessTrees, waitForPidsExit } from "../process-tree.js";
 import { verifyFingerprint } from "../fingerprint.js";
+import { stopViaStdin } from "../stop-stdin.js";
 import type { BankaiEnvelope } from "../plan/envelope.js";
 import type { RunLogger } from "../log/jsonl.js";
 import type { RegistryEntry } from "../registry/types.js";
@@ -115,7 +116,9 @@ export async function runStopCommand(opts: StopCommandOptions): Promise<BankaiEn
     }
     const r = entry.envKind === "attached-process" && entry.control
       ? await stopAttachedProcess({ entry, graceMs, env, logger })
-      : await terminateProcessTree({ pid: entry.pid, graceMs, env });
+      : entry.stop?.kind === "stdin"
+        ? await stopManagedProcessViaStdin({ entry, graceMs, env, logger })
+        : await terminateProcessTree({ pid: entry.pid, graceMs, env });
     killed = r.killed;
     escalated = r.escalated;
     detail = r.detail;
@@ -193,5 +196,56 @@ async function stopAttachedProcess(opts: {
     killed: forced.killed,
     escalated: true,
     detail: `attached Ctrl+C stop timed out after ${graceMs}ms; ${forced.detail}`,
+  };
+}
+
+async function stopManagedProcessViaStdin(opts: {
+  entry: RegistryEntry;
+  graceMs: number;
+  env: Env;
+  logger: RunLogger;
+}): Promise<{ killed: boolean; escalated: boolean; detail: string }> {
+  const { entry, graceMs, env, logger } = opts;
+  if (!entry.stop || entry.stop.kind !== "stdin") {
+    return terminateProcessTree({ pid: entry.pid, graceMs, env });
+  }
+
+  // Use graceMs from the persisted strategy if present, CLI/step
+  // override takes precedence (already resolved into opts.graceMs by
+  // the caller when explicitly provided).
+  const effectiveGrace = entry.stop.graceMs ?? graceMs;
+
+  logger.emit("stop.stdin.begin", {
+    name: entry.name,
+    pid: entry.pid,
+    stdinFile: entry.stop.stdinFile,
+    graceMs: effectiveGrace,
+  });
+
+  const result = await stopViaStdin({
+    stop: entry.stop,
+    pid: entry.pid,
+    graceMs: effectiveGrace,
+    env,
+  });
+
+  logger.emit("stop.stdin.result", {
+    name: entry.name,
+    delivered: result.delivered,
+    exited: result.exited,
+    detail: result.detail,
+  });
+
+  if (result.exited) {
+    return { killed: true, escalated: false, detail: result.detail };
+  }
+
+  // Escalate: stdin delivery failed or process did not exit in time.
+  logger.emit("stop.stdin.escalate", { name: entry.name, pid: entry.pid });
+  const fallback = await terminateProcessTree({ pid: entry.pid, graceMs, env });
+  return {
+    killed: fallback.killed,
+    escalated: true,
+    detail: `${result.detail}; escalated to process-tree termination: ${fallback.detail}`,
   };
 }

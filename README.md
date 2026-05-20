@@ -63,6 +63,8 @@ npm link    # makes `bankai` available globally
 - `logs` - read detailed run and transcript log tails for registered handles.
 - `stop` - stop a registered handle by name. Attached processes use the
   Ctrl+C control path and verify tracked processes exit before clearing state.
+  Managed processes with a `stop` config use the declared stdin strategy first,
+  then escalate to process-tree termination on timeout.
 - `doctor` - run health checks, validate an optional plan, and prune stale
   registry state with `--prune`.
 - `update` - self-update this Bankai git checkout with `git pull --ff-only`,
@@ -91,6 +93,46 @@ workflow code:
 `bankai run` injects reserved automatic bindings for generated artifacts:
 `bankaiRunId`, `bankaiLogFile`, `bankaiOutputDir`, `bankaiPlanDir`, and
 `bankaiWorkDir`.
+
+## Managed-process graceful stdin stop
+
+Interactive dev servers that require specific stdin input to exit gracefully
+(e.g., pressing `q` to quit) can declare a `stop` strategy in their
+managed-process config:
+
+```json
+{
+  "id": "dev-server",
+  "kind": "setup",
+  "env": "managed-process",
+  "registerAs": "my-server",
+  "config": {
+    "command": "my-dev-server",
+    "args": ["--port", "3000"],
+    "cwd": ".",
+    "logFile": "logs/server.log",
+    "stop": {
+      "kind": "stdin",
+      "input": "q\n",
+      "graceMs": 10000
+    }
+  }
+}
+```
+
+When `bankai stop my-server` or a `stop` step targets this handle:
+
+1. Bankai writes the configured `input` to the process stdin via a
+   cross-platform relay mechanism (works on Linux, macOS, and Windows).
+2. It waits up to `graceMs` (default: 5000ms) for the process to exit.
+3. If the process exits within the grace period, stop succeeds without
+   escalation.
+4. If the process does not exit in time, Bankai falls back to
+   process-tree termination (SIGTERM/SIGKILL on POSIX, taskkill on
+   Windows) and reports the escalation in the envelope.
+
+When `stop` is omitted, the existing behavior is preserved: processes are
+terminated immediately via the process tree.
 
 ## Agentic contract
 

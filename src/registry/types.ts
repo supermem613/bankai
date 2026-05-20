@@ -17,6 +17,22 @@ import { z } from "zod";
 //   4. ProcessFingerprint is captured at registration. `bankai stop`
 //      verifies fingerprint before signaling so a reused pid cannot be
 //      mistakenly killed.
+//   5. StopStrategy is persisted so that `bankai stop` (possibly from a
+//      different bankai process) can deliver the configured stop input
+//      to a long-lived child that outlived the original plan process.
+
+// Declarative stop strategy for managed processes that require specific
+// stdin input to exit gracefully rather than SIGTERM.
+export const StopStrategySchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("stdin"),
+    input: z.string().min(1),
+    graceMs: z.number().int().nonnegative().optional(),
+    stdinFile: z.string().min(1),
+  }).strict(),
+]);
+
+export type StopStrategy = z.infer<typeof StopStrategySchema>;
 
 export const ProcessFingerprintSchema = z.object({
   creationTime: z.string().min(1),
@@ -49,6 +65,7 @@ export const ProcessHandleSchema = z.object({
   logFile: z.string().min(1),
   logStartOffset: z.number().int().nonnegative().default(0),
   fingerprint: ProcessFingerprintSchema.optional(),
+  stop: StopStrategySchema.optional(),
   control: z.object({
     stopRequestFile: z.string().min(1),
     stopDoneFile: z.string().min(1),

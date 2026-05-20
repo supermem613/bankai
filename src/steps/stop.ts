@@ -2,6 +2,7 @@ import { z } from "zod";
 import { registerStep, type StepContext, type StepRunResult } from "./registry.js";
 import { isProcessAlive, terminateProcessTree } from "../process-tree.js";
 import { verifyFingerprint } from "../fingerprint.js";
+import { stopViaStdin } from "../stop-stdin.js";
 
 // stop step kind: terminate a registered handle by name. Verifies
 // fingerprint before signaling unless `force` is set. Updates the
@@ -78,11 +79,35 @@ async function runStopStep(spec: StopStepV1, ctx: StepContext): Promise<StepRunR
     }
   }
 
-  const term = await terminateProcessTree({
-    pid: entry.pid,
-    graceMs: spec.graceMs,
-    env: ctx.env,
-  });
+  // Route through stdin stop strategy if the registry entry has one.
+  let term: { killed: boolean; escalated: boolean; detail: string };
+  if (entry.stop?.kind === "stdin") {
+    const effectiveGrace = entry.stop.graceMs ?? spec.graceMs;
+    ctx.logger.emit("step.stop.stdin.begin", { stepId: spec.id, name: spec.name, stdinFile: entry.stop.stdinFile });
+    const stdinResult = await stopViaStdin({
+      stop: entry.stop,
+      pid: entry.pid,
+      graceMs: effectiveGrace,
+      env: ctx.env,
+    });
+    if (stdinResult.exited) {
+      term = { killed: true, escalated: false, detail: stdinResult.detail };
+    } else {
+      ctx.logger.emit("step.stop.stdin.escalate", { stepId: spec.id, name: spec.name });
+      const fallback = await terminateProcessTree({ pid: entry.pid, graceMs: spec.graceMs, env: ctx.env });
+      term = {
+        killed: fallback.killed,
+        escalated: true,
+        detail: `${stdinResult.detail}; escalated: ${fallback.detail}`,
+      };
+    }
+  } else {
+    term = await terminateProcessTree({
+      pid: entry.pid,
+      graceMs: spec.graceMs,
+      env: ctx.env,
+    });
+  }
   ctx.logger.emit("step.stop.terminated", {
     stepId: spec.id,
     name: spec.name,
