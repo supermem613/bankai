@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import { strict as assert } from "node:assert";
-import { readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
@@ -34,6 +34,21 @@ function messages(result: ReturnType<typeof parsePlan>): string[] {
 function assertRejectsWith(result: ReturnType<typeof parsePlan>, fragment: string): void {
   assert.ok(!result.success, "expected plan validation to fail");
   assert.ok(messages(result).some((message) => message.includes(fragment)), messages(result).join("\n"));
+}
+
+function bundledSkillPlanFiles(): Array<{ skill: string; file: string; path: string }> {
+  const skillsDir = join(repoRoot, ".claude", "skills");
+  return readdirSync(skillsDir, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .flatMap((skill) => {
+      const plansDir = join(skillsDir, skill.name, "plans");
+      if (!existsSync(plansDir)) {
+        return [];
+      }
+      return readdirSync(plansDir, { withFileTypes: true })
+        .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+        .map((entry) => ({ skill: skill.name, file: entry.name, path: join(plansDir, entry.name) }));
+    });
 }
 
 describe("plan schema", () => {
@@ -366,14 +381,11 @@ describe("plan schema", () => {
     assert.ok(result.success, JSON.stringify(result.success ? null : result.error.issues));
   });
 
-  it("parses every bundled skill plan JSON", () => {
-    for (const skill of ["test", "dev-loop"]) {
-      const plansDir = join(repoRoot, ".claude", "skills", skill, "plans");
-      for (const file of readdirSync(plansDir).filter((entry) => entry.endsWith(".json"))) {
-        const plan = JSON.parse(readFileSync(join(plansDir, file), "utf8")) as unknown;
-        const result = parsePlan(plan);
-        assert.ok(result.success, `${skill}/${file}: ${messages(result).join("\n")}`);
-      }
+  it("parses bundled skill plan JSON files when present", () => {
+    for (const { skill, file, path } of bundledSkillPlanFiles()) {
+      const plan = JSON.parse(readFileSync(path, "utf8")) as unknown;
+      const result = parsePlan(plan);
+      assert.ok(result.success, `${skill}/${file}: ${messages(result).join("\n")}`);
     }
   });
 });

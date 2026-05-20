@@ -11,7 +11,7 @@ import type { BankaiEnvelope } from "../plan/envelope.js";
 
 // `bankai doctor [--plan <path>] [--prune]` — comprehensive health
 // check. Always:
-//   * Node version >= 24
+//   * Node version >= 22
 //   * Bankai install integrity (steps registry populated)
 //   * Per-env-plugin doctor()
 //   * Per-tool-plugin doctor() with default config
@@ -36,7 +36,7 @@ interface Check {
   hint?: string;
 }
 
-const REQUIRED_NODE_MAJOR = 24;
+const REQUIRED_NODE_MAJOR = 22;
 
 export async function runDoctorCommand(opts: DoctorCommandOptions): Promise<BankaiEnvelope> {
   const env = opts.env ?? createNodeEnv();

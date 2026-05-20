@@ -8,7 +8,7 @@ npm run build
 npm test
 ```
 
-Bankai requires Node.js 24 or newer.
+Bankai requires Node.js 22 or newer.
 
 ## Quality bar
 

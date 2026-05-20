@@ -99,15 +99,12 @@ stderr, schema, status, logs, and stop lifecycle contract agents should rely on.
 
 ## Bundled skills
 
-Bankai ships thin agent routers under `.claude/skills/`:
+Bankai ships a thin agent router under `.claude/skills/`:
 
-- `dev-loop` starts, inspects, logs, and stops long-running dev loops through
-  Bankai plans.
-- `test` runs Bankai test plans and reports pass/fail from the envelope.
 - `create-bankai-skill` helps agents create new skills that delegate execution
   to Bankai instead of embedding orchestration logic in skill prose.
 
-The bundled skills are examples of the intended pattern: the skill routes and
+The bundled skill is an example of the intended pattern: the skill routes and
 explains, while Bankai owns process lifecycle, readiness, retries, logs,
 assertions, and JSON envelopes.
 
@@ -145,8 +142,6 @@ docs/
   AGENTIC_CONTRACT.md # Agent-facing CLI contract
 .claude/skills/
   create-bankai-skill/
-  dev-loop/
-  test/
 test/
   run.mjs             # Cross-platform test runner (HOME-sandboxed)
   tsconfig.json       # Test type-check config
