@@ -62,6 +62,32 @@ describe("orchestrator: attached-process plans", () => {
     });
   }
 
+  // The registry is written asynchronously by the parent run process while
+  // the spawned child writes its own ready file in a parallel process. On
+  // Windows the child can win that race and reach its readyFile write
+  // before the parent's lock-acquire + write of the registry returns, so
+  // tests that synchronize on a child-written file must still poll for the
+  // registry entry before assuming `bankai status` will see it.
+  async function waitForRegistryEntry(opts: {
+    env: ReturnType<typeof createNodeEnv>;
+    logDir: string;
+    repoRoot: string;
+    name: string;
+    timeoutMs?: number;
+  }): Promise<Awaited<ReturnType<typeof runStatusCommand>>> {
+    const deadline = Date.now() + (opts.timeoutMs ?? 5000);
+    let last: Awaited<ReturnType<typeof runStatusCommand>> | undefined;
+    while (Date.now() < deadline) {
+      last = await runStatusCommand({ env: opts.env, logDir: opts.logDir, repoRoot: opts.repoRoot });
+      const found = last.registry?.find((item) => (item as { name?: string }).name === opts.name);
+      if (found) {
+        return last;
+      }
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    throw new Error(`registry entry "${opts.name}" did not appear within ${opts.timeoutMs ?? 5000}ms; last registry: ${JSON.stringify(last?.registry)}`);
+  }
+
   function isPidAlive(pid: number): boolean {
     try {
       process.kill(pid, 0);
@@ -200,7 +226,7 @@ describe("orchestrator: attached-process plans", () => {
     });
 
     await waitForFile(readyFile);
-    const status = await runStatusCommand({ env, logDir: join(tmp, "logs"), repoRoot: tmp });
+    const status = await waitForRegistryEntry({ env, logDir: join(tmp, "logs"), repoRoot: tmp, name: "attached-control" });
     const entry = status.registry?.find((item) => (item as { name?: string }).name === "attached-control") as { alive?: boolean } | undefined;
     assert.equal(entry?.alive, true);
 
@@ -259,6 +285,9 @@ describe("orchestrator: attached-process plans", () => {
       childPid = Number(readFileSync(childPidFile, "utf8"));
       assert.equal(Number.isInteger(childPid), true);
       assert.equal(isPidAlive(childPid), true);
+      // The parent's registry write races the child's readyFile write.
+      // Wait for the registry to reflect the run before issuing stop.
+      await waitForRegistryEntry({ env, logDir: join(tmp, "logs"), repoRoot: tmp, name: "attached-control-tree" });
 
       const stop = await runStopCommand({ name: "attached-control-tree", env, logDir: join(tmp, "logs"), repoRoot: tmp, graceMs: 5000 });
       assert.equal(stop.ok, true, JSON.stringify(stop.failure));

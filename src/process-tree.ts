@@ -179,6 +179,32 @@ export async function listProcessTreePids(opts: { pid: number; env: Env }): Prom
   }
 }
 
+// Re-snapshot the process tree without requiring the root pid to still be
+// alive. Used after an attached process has exited to catch orphaned
+// grandchildren whose ParentProcessId still points at the (now-dead) root.
+// Windows preserves the original PPID even after the parent dies, so the
+// descendant walk still resolves them. POSIX `ps` likewise reports the
+// stored ppid (which becomes 1 once init re-parents); we only call this
+// before re-parenting completes, so descendants are still discoverable.
+export async function listProcessTreePidsIncludingOrphans(opts: { pid: number; env: Env }): Promise<number[]> {
+  if (opts.env.platform === "win32") {
+    return queryWindowsProcessTree(opts);
+  }
+  try {
+    const result = await runProbe(opts.env, "ps", ["-eo", "pid=,ppid="]);
+    if (result.exitCode !== 0) {
+      return [];
+    }
+    const rows = result.stdout.split(/\r?\n/)
+      .map((line) => line.trim().split(/\s+/).map(Number))
+      .filter((parts) => parts.length === 2 && parts.every(Number.isFinite))
+      .map(([pid, ppid]) => ({ pid, ppid }));
+    return collectDescendants(opts.pid, rows);
+  } catch {
+    return [];
+  }
+}
+
 export async function waitForPidsExit(pids: number[], timeoutMs: number, pollIntervalMs = DEFAULT_POLL_INTERVAL_MS): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   const unique = [...new Set(pids)];

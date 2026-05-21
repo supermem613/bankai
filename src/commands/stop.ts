@@ -4,7 +4,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { createNodeEnv, type Env } from "../env-runtime/env.js";
 import { createRunLogger, defaultBankaiLogsDir } from "../log/jsonl.js";
 import { createRegistryStore } from "../registry/store.js";
-import { isProcessAlive, listProcessTreePids, terminateProcessTree, terminateProcessTrees, waitForPidsExit } from "../process-tree.js";
+import { isProcessAlive, listProcessTreePids, listProcessTreePidsIncludingOrphans, terminateProcessTree, terminateProcessTrees, waitForPidsExit } from "../process-tree.js";
 import { verifyFingerprint } from "../fingerprint.js";
 import { stopViaStdin } from "../stop-stdin.js";
 import type { BankaiEnvelope } from "../plan/envelope.js";
@@ -188,14 +188,28 @@ async function stopAttachedProcess(opts: {
   const stopped = await waitForFileCreated(entry.control.stopDoneFile, graceMs);
   if (stopped) {
     const exited = await waitForPidsExit(trackedPids, 2000);
-    if (exited) {
+    // Re-snapshot the tree from entry.pid even though it is now dead. WMI
+    // (and POSIX `ps`) still report the original PPID of orphaned
+    // grandchildren until they are reparented, so collectDescendants will
+    // surface descendants that the pre-stop snapshot missed due to WMI
+    // cache lag. Anything still alive is killed here so callers never see
+    // a "successful stop" that left orphans behind.
+    const fresh = await listProcessTreePidsIncludingOrphans({ pid: entry.pid, env });
+    const survivors = fresh.filter((p) => p !== entry.pid && isProcessAlive(p));
+    if (exited && survivors.length === 0) {
       return { killed: true, escalated: false, detail: "attached Ctrl+C stop completed and tracked process tree exited" };
     }
-    const forced = await terminateProcessTrees({ pids: trackedPids, graceMs: 2000, env });
+    const pidsToKill = [...new Set([...trackedPids.filter(isProcessAlive), ...survivors])];
+    if (pidsToKill.length === 0) {
+      return { killed: true, escalated: false, detail: "attached Ctrl+C stop completed and tracked process tree exited" };
+    }
+    const forced = await terminateProcessTrees({ pids: pidsToKill, graceMs: 2000, env });
     return {
       killed: forced.killed,
       escalated: forced.escalated,
-      detail: `attached Ctrl+C stop completed but tracked pids remained; ${forced.detail}`,
+      detail: survivors.length > 0
+        ? `attached Ctrl+C stop completed but ${survivors.length} tracked descendant(s) survived the initial snapshot; ${forced.detail}`
+        : `attached Ctrl+C stop completed but tracked pids remained; ${forced.detail}`,
     };
   }
   const forced = await terminateProcessTrees({ pids: trackedPids.length > 0 ? trackedPids : [entry.pid], graceMs: 2000, env });
