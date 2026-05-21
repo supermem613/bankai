@@ -125,25 +125,44 @@ function collectDescendants(root: number, rows: Array<{ pid: number; ppid: numbe
   return result;
 }
 
+async function queryWindowsProcessTree(opts: { pid: number; env: Env }): Promise<number[]> {
+  const ps = "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId | ConvertTo-Json -Compress";
+  try {
+    const result = await runProbe(opts.env, "powershell.exe", ["-NoProfile", "-NoLogo", "-NonInteractive", "-Command", ps]);
+    if (result.exitCode !== 0 || !result.stdout.trim()) {
+      return [opts.pid];
+    }
+    const parsed = JSON.parse(result.stdout) as Array<{ ProcessId: number; ParentProcessId: number }> | { ProcessId: number; ParentProcessId: number };
+    const rows = (Array.isArray(parsed) ? parsed : [parsed])
+      .map((row) => ({ pid: row.ProcessId, ppid: row.ParentProcessId }))
+      .filter((row) => Number.isFinite(row.pid) && Number.isFinite(row.ppid));
+    return collectDescendants(opts.pid, rows);
+  } catch {
+    return [opts.pid];
+  }
+}
+
 export async function listProcessTreePids(opts: { pid: number; env: Env }): Promise<number[]> {
   if (!isProcessAlive(opts.pid)) {
     return [];
   }
   if (opts.env.platform === "win32") {
-    const ps = "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId | ConvertTo-Json -Compress";
-    try {
-      const result = await runProbe(opts.env, "powershell.exe", ["-NoProfile", "-NoLogo", "-NonInteractive", "-Command", ps]);
-      if (result.exitCode !== 0 || !result.stdout.trim()) {
-        return [opts.pid];
+    const first = await queryWindowsProcessTree(opts);
+    // WMI Win32_Process is cache-backed and can lag behind recent process
+    // creations on Windows. When the first snapshot lists only the root pid,
+    // retry once after a brief delay so descendants spawned shortly before
+    // the call are visible. If the root has genuinely no children, this
+    // costs ~150ms once per call. The alternative (silently missing
+    // children) leaks orphaned processes after stop.
+    if (first.length <= 1 && isProcessAlive(opts.pid)) {
+      await delay(150);
+      if (!isProcessAlive(opts.pid)) {
+        return first;
       }
-      const parsed = JSON.parse(result.stdout) as Array<{ ProcessId: number; ParentProcessId: number }> | { ProcessId: number; ParentProcessId: number };
-      const rows = (Array.isArray(parsed) ? parsed : [parsed])
-        .map((row) => ({ pid: row.ProcessId, ppid: row.ParentProcessId }))
-        .filter((row) => Number.isFinite(row.pid) && Number.isFinite(row.ppid));
-      return collectDescendants(opts.pid, rows);
-    } catch {
-      return [opts.pid];
+      const second = await queryWindowsProcessTree(opts);
+      return second.length > first.length ? second : first;
     }
+    return first;
   }
   try {
     const result = await runProbe(opts.env, "ps", ["-eo", "pid=,ppid="]);

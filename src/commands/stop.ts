@@ -25,6 +25,7 @@ async function waitForFileCreated(path: string, timeoutMs: number): Promise<bool
       }
       settled = true;
       clearTimeout(timer);
+      clearInterval(poller);
       watcher.close();
       resolveWait(result);
     };
@@ -36,6 +37,12 @@ async function waitForFileCreated(path: string, timeoutMs: number): Promise<bool
         settle(true);
       }
     });
+    // Poll fallback: fs.watch on Windows can silently miss the create event.
+    const poller = setInterval(() => {
+      if (existsSync(path)) {
+        settle(true);
+      }
+    }, 250);
   });
 }
 

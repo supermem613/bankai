@@ -132,6 +132,9 @@ async function runShellAttempt(spec: ShellStepV1, ctx: StepContext, resolvedCwd:
 
   return await new Promise<StepRunResult>((resolveRun) => {
     let settled = false;
+    let timedOut = false;
+    let aborted = false;
+    let terminateDetail = "";
     const settle = (r: StepRunResult): void => {
       if (settled) {
         return;
@@ -238,7 +241,9 @@ async function runShellAttempt(spec: ShellStepV1, ctx: StepContext, resolvedCwd:
     };
 
     const onAbort = (): void => {
+      aborted = true;
       void terminateChildTree().then((detail) => {
+        terminateDetail = detail;
         stdoutFileStream?.end();
         settle({
           ok: false,
@@ -273,7 +278,12 @@ async function runShellAttempt(spec: ShellStepV1, ctx: StepContext, resolvedCwd:
     }
 
     const timer = setTimeout(() => {
+      // Mark BEFORE awaiting terminateChildTree. The kill may cause the
+      // child's exit handler to fire first; it must see `timedOut` and
+      // report the timeout instead of the exit-code-mismatch message.
+      timedOut = true;
       void terminateChildTree().then((detail) => {
+        terminateDetail = detail;
         stdoutFileStream?.end();
         settle({
           ok: false,
@@ -325,6 +335,39 @@ async function runShellAttempt(spec: ShellStepV1, ctx: StepContext, resolvedCwd:
       closeCapturedStreams();
       const exitCode = code ?? -1;
       const finishResult = (): void => {
+        // When timed out or aborted, the timer/abort handler owns the error
+        // message. The exit handler must not report a misleading
+        // exit-code-mismatch error when the process was forcibly killed.
+        if (timedOut) {
+          settle({
+            ok: false,
+            error: `attempt ${attempt} timed out after ${spec.timeoutMs}ms${terminateDetail ? `: ${terminateDetail}` : ""}`,
+            shell: {
+              exitCode,
+              stdoutFile,
+              stdout: stdoutBuf,
+              stderr: stderrBuf,
+              stdoutBytes,
+              stderrBytes,
+            },
+          });
+          return;
+        }
+        if (aborted) {
+          settle({
+            ok: false,
+            error: `attempt ${attempt} aborted${terminateDetail ? `: ${terminateDetail}` : ""}`,
+            shell: {
+              exitCode,
+              stdoutFile,
+              stdout: stdoutBuf,
+              stderr: stderrBuf,
+              stdoutBytes,
+              stderrBytes,
+            },
+          });
+          return;
+        }
         const exitOk = exitCode === spec.expectExitCode;
         const ok = exitOk && stdoutFileError === undefined;
         settle({

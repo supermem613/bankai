@@ -196,8 +196,18 @@ async function runAttachedProcess(spec: AttachedProcessStepV1, ctx: StepContext)
     let startupTimer: NodeJS.Timeout | undefined;
     let pendingFailure: { error: string; detail: string } | undefined;
     let stopWatcher: FSWatcher | undefined;
+    let stopPollTimer: NodeJS.Timeout | undefined;
     let registered = false;
     let registrationDone: Promise<void> = Promise.resolve();
+
+    const cleanupStopWatching = (): void => {
+      stopWatcher?.close();
+      stopWatcher = undefined;
+      if (stopPollTimer) {
+        clearInterval(stopPollTimer);
+        stopPollTimer = undefined;
+      }
+    };
 
     const settle = (result: StepRunResult): void => {
       if (settled) {
@@ -207,10 +217,13 @@ async function runAttachedProcess(spec: AttachedProcessStepV1, ctx: StepContext)
       if (startupTimer) {
         clearTimeout(startupTimer);
       }
-      stopWatcher?.close();
+      cleanupStopWatching();
       ctx.signal.removeEventListener("abort", onAbort);
       void (async () => {
         await registrationDone;
+        // registrationDone may have created watchers after settle ran synchronously
+        // (fast-exit children race). Always close them here.
+        cleanupStopWatching();
         if (registered && handle) {
           if (result.ok) {
             await ctx.registry.removeEntry(registerName);
@@ -237,6 +250,7 @@ async function runAttachedProcess(spec: AttachedProcessStepV1, ctx: StepContext)
           }
         }
         if (result.attachedProcess) {
+          await mkdir(controlDir, { recursive: true }).catch(() => {});
           await writeFile(stopDoneFile, JSON.stringify({
             stoppedAt: ctx.env.clock.isoNow(),
             ok: result.ok,
@@ -283,24 +297,9 @@ async function runAttachedProcess(spec: AttachedProcessStepV1, ctx: StepContext)
       if (!handle) {
         return;
       }
-      await mkdir(controlDir, { recursive: true });
-      await Promise.all([
-        rm(stopRequestFile, { force: true }),
-        rm(stopDoneFile, { force: true }),
-      ]);
-      if (settled) {
-        return;
-      }
-      stopWatcher = watch(controlDir, () => {
-        if (existsSync(stopRequestFile)) {
-          ctx.logger.emit("step.attached-process.stop-request", {
-            stepId: spec.id,
-            name: registerName,
-            stopRequestFile,
-          });
-          onAbort();
-        }
-      });
+      // Register the entry FIRST so a concurrent `bankai status` racing with
+      // the child's own external readiness signal (e.g., the child writing a
+      // file it controls) still sees the entry. mkdir + rm + watch follow.
       await ctx.registry.putEntry({
         ...handle,
         name: registerName,
@@ -311,10 +310,43 @@ async function runAttachedProcess(spec: AttachedProcessStepV1, ctx: StepContext)
         control: { stopRequestFile, stopDoneFile },
       });
       registered = true;
+      // Do NOT remove the entry here if `settled` became true. settle's IIFE
+      // owns the ok-vs-failure entry lifecycle and would otherwise lose the
+      // failure record for fast-exit children.
       if (settled) {
-        await ctx.registry.removeEntry(registerName);
-        registered = false;
         return;
+      }
+      await mkdir(controlDir, { recursive: true });
+      await Promise.all([
+        rm(stopRequestFile, { force: true }),
+        rm(stopDoneFile, { force: true }),
+      ]);
+      if (settled) {
+        return;
+      }
+      const triggerStop = (): void => {
+        if (existsSync(stopRequestFile)) {
+          ctx.logger.emit("step.attached-process.stop-request", {
+            stepId: spec.id,
+            name: registerName,
+            stopRequestFile,
+          });
+          onAbort();
+        }
+      };
+      stopWatcher = watch(controlDir, triggerStop);
+      // Poll fallback: fs.watch on Windows can silently miss the stop-request
+      // create event on some FS/host combos. The relay script in
+      // src/environments/managed-process.ts uses the same poll fallback for
+      // the same reason.
+      stopPollTimer = setInterval(triggerStop, 500);
+      if (settled) {
+        cleanupStopWatching();
+        return;
+      }
+      // Race-safety: a stop request may have arrived between rm and watch.
+      if (existsSync(stopRequestFile)) {
+        triggerStop();
       }
       ctx.logger.emit("registry.put", { name: registerName, pid: handle.pid, envKind: "attached-process" });
     })().catch((err: unknown) => {
