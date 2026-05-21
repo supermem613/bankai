@@ -33,21 +33,43 @@ if (sandboxHome) {
   env.LOCALAPPDATA = join(sandboxHome, "AppData", "Local");
 }
 
+// Per-file timeout for the spawned node:test run. --test-timeout fails any
+// single it()/test() that exceeds the limit so a slow test gets a real TAP
+// failure with name+location instead of an indefinite hang. The execSync
+// timeout backstop covers the case where the hang is outside any registered
+// test (top-level import side-effects, beforeEach, unclosed handles holding
+// the process open past the suite's final 'plan' marker). Without these,
+// a single hung file pegs the entire run at the GH Actions default 6h
+// job timeout, with no diagnostic about which file or test was stuck.
+const PER_TEST_TIMEOUT_MS = 120_000;
+const PER_FILE_TIMEOUT_MS = 180_000;
+
 let exitCode = 0;
 let totalTests = 0;
 let totalPass = 0;
 let totalFail = 0;
 const failedFiles = [];
+const timedOutFiles = [];
 try {
   for (const file of allFiles) {
-    const cmd = `node --import tsx --test-reporter=tap ${file}`;
+    const cmd = `node --import tsx --test-reporter=tap --test-timeout=${PER_TEST_TIMEOUT_MS} ${file}`;
     let stdout = "";
     let fileFailed = false;
     try {
-      stdout = execSync(cmd, { env, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] });
+      stdout = execSync(cmd, {
+        env,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "inherit"],
+        timeout: PER_FILE_TIMEOUT_MS,
+        killSignal: "SIGKILL",
+      });
     } catch (err) {
       fileFailed = true;
       stdout = (err.stdout ?? "").toString();
+      if (err.signal === "SIGKILL" || err.code === "ETIMEDOUT") {
+        timedOutFiles.push(file);
+        stdout += `\n# RUNNER TIMEOUT: ${file} did not exit within ${PER_FILE_TIMEOUT_MS}ms and was killed\n`;
+      }
       failedFiles.push(file);
     }
     process.stdout.write(stdout);
@@ -65,6 +87,9 @@ try {
   if (failedFiles.length) {
     console.log(`# Failed files:\n${failedFiles.map((f) => `#   ${f}`).join("\n")}`);
     exitCode = 1;
+  }
+  if (timedOutFiles.length) {
+    console.log(`# Timed-out files (killed after ${PER_FILE_TIMEOUT_MS}ms):\n${timedOutFiles.map((f) => `#   ${f}`).join("\n")}`);
   }
 } finally {
   if (sandboxHome) {

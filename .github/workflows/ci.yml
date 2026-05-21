@@ -13,6 +13,11 @@ jobs:
   build-test:
     name: Build and test
     runs-on: ${{ matrix.os }}
+    # Cap the entire job. Without this the runner default is 6 hours, which
+    # masks Windows test hangs as a six-hour wait with no diagnostics. With
+    # 20 minutes plus per-file/per-test timeouts in test/run.mjs the failing
+    # leg reports which file and test was stuck.
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
