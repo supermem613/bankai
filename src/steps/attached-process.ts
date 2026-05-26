@@ -9,8 +9,10 @@ import { BindingPathRefSchema, resolveBindingPath } from "../bindings.js";
 import { ReadinessProbeRefSchema } from "../plan/schema.js";
 import { getReadinessProbe } from "../readiness/registry.js";
 import { evaluateReadiness } from "../readiness/evaluate.js";
-import type { ProcessHandle, ReadinessObservation } from "../registry/types.js";
+import type { ProcessFingerprint, ProcessHandle, ReadinessObservation } from "../registry/types.js";
 import { CommandNotFoundError, resolveCommand } from "../spawn/resolve-command.js";
+import { captureFingerprint } from "../fingerprint.js";
+import { checkRegisteredAlive, formatAlreadyRunningMessage } from "../registry/preflight.js";
 
 const WINDOWS_CTRL_C_EXIT = -1_073_741_510;
 const WINDOWS_CTRL_C_EXIT_UNSIGNED = 3_221_225_786;
@@ -177,6 +179,48 @@ async function runAttachedProcess(spec: AttachedProcessStepV1, ctx: StepContext)
       },
     };
   }
+  // Hard-fail if an explicit registerAs name is already claimed by a
+  // live process with a matching fingerprint. We refuse to re-spawn the
+  // tool against the same working tree because most tools (compilers,
+  // file watchers) corrupt or error when launched twice concurrently.
+  // Gate on `spec.registerAs` only; the planName fallback is shared by
+  // independent invocations and would produce spurious collisions.
+  if (spec.registerAs) {
+    const preflight = await checkRegisteredAlive({
+      env: ctx.env,
+      registry: ctx.registry,
+      name: spec.registerAs,
+    });
+    if (preflight.kind === "alive") {
+      const detail = formatAlreadyRunningMessage({ name: spec.registerAs, entry: preflight.entry });
+      ctx.logger.emit("step.attached-process.already-running", {
+        stepId: spec.id,
+        name: spec.registerAs,
+        pid: preflight.entry.pid,
+        registeredAt: preflight.entry.registeredAt,
+        planPath: preflight.entry.planPath,
+        detail,
+      });
+      return {
+        ok: false,
+        error: detail,
+        attachedProcess: {
+          stoppedBy: "exit",
+          escalated: false,
+          detail,
+        },
+      };
+    }
+    if (preflight.kind === "stale") {
+      ctx.logger.emit("step.attached-process.stale-cleanup", {
+        stepId: spec.id,
+        name: spec.registerAs,
+        pid: preflight.entry.pid,
+        reason: preflight.reason,
+      });
+      await ctx.registry.removeEntry(spec.registerAs);
+    }
+  }
   ctx.logger.emit("step.attached-process.spawn", {
     stepId: spec.id,
     command: resolvedCommand.command,
@@ -230,6 +274,7 @@ async function runAttachedProcess(spec: AttachedProcessStepV1, ctx: StepContext)
           } else {
             await ctx.registry.putEntry({
               ...handle,
+              fingerprint,
               name: registerName,
               planName: ctx.planName,
               planPath: ctx.planPath,
@@ -292,16 +337,38 @@ async function runAttachedProcess(spec: AttachedProcessStepV1, ctx: StepContext)
         logStartOffset: 0,
       }
       : undefined;
+    // Fingerprint capture is kicked off as soon as the pid is known so
+    // the persisted registry entry has identity information for a
+    // subsequent invocation's preflight check. Best-effort: a fast-exit
+    // child or a sandboxed environment may return undefined, in which
+    // case the next invocation treats "alive but no fingerprint" as
+    // unverifiable and prunes + respawns.
+    let fingerprint: ProcessFingerprint | undefined;
+    const fingerprintReady: Promise<void> = handle
+      ? captureFingerprint({ pid: handle.pid, env: ctx.env })
+        .then((fp) => {
+          fingerprint = fp;
+        })
+        .catch(() => {
+          // Soft failure. Persist nothing.
+        })
+      : Promise.resolve();
 
     registrationDone = (async () => {
       if (!handle) {
         return;
       }
-      // Register the entry FIRST so a concurrent `bankai status` racing with
-      // the child's own external readiness signal (e.g., the child writing a
-      // file it controls) still sees the entry. mkdir + rm + watch follow.
+      // Wait for fingerprint capture before the first putEntry so the
+      // registered entry is identity-verifiable by a concurrent
+      // bankai run that hits the preflight check. Then register the
+      // entry FIRST so a concurrent `bankai status` racing with the
+      // child's own external readiness signal (e.g., the child writing
+      // a file it controls) still sees the entry. mkdir + rm + watch
+      // follow.
+      await fingerprintReady;
       await ctx.registry.putEntry({
         ...handle,
+        fingerprint,
         name: registerName,
         planName: ctx.planName,
         planPath: ctx.planPath,

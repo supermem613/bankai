@@ -30,6 +30,7 @@ import { loadPlan } from "./plan/load.js";
 import { defaultBankaiLogsDir, resolveLogFilePath } from "./log/jsonl.js";
 import { launchVisibleTerminal } from "./visible-terminal.js";
 import { createRegistryStore } from "./registry/store.js";
+import { checkRegisteredAlive, formatAlreadyRunningMessage } from "./registry/preflight.js";
 
 const pkgPath = join(dirname(fileURLToPath(import.meta.url)), "..", "package.json");
 const VERSION = (JSON.parse(readFileSync(pkgPath, "utf8")) as { version: string }).version;
@@ -103,6 +104,52 @@ program
         ? resolve(env.cwd, opts.logFile)
         : resolveLogFilePath({ env, command: "run", logsDir, planName: visibleInfo.planName });
       const readyEventFile = `${logFile}.ready.json`;
+      // Preflight: refuse to launch a new visible terminal when the
+      // attached-process `registerAs` name is already held by a live
+      // process. The same check exists inside the step as defense-in-
+      // depth, but doing it here also avoids opening a visible terminal
+      // window that would immediately fail.
+      if (visibleInfo.registerAs) {
+        const registry = createRegistryStore({ env });
+        const preflight = await checkRegisteredAlive({ env, registry, name: visibleInfo.registerAs });
+        if (preflight.kind === "alive") {
+          const reason = formatAlreadyRunningMessage({ name: visibleInfo.registerAs, entry: preflight.entry });
+          const finishedAt = new Date().toISOString();
+          const envelope = {
+            ok: false,
+            command: "run",
+            startedAt,
+            finishedAt,
+            durationMs: new Date(finishedAt).getTime() - new Date(startedAt).getTime(),
+            runId: "visible-terminal",
+            logFile,
+            planPath,
+            steps: [],
+            registry: await getStatusRegistryEntries({ env, names: [visibleInfo.registerAs] }),
+            visibleTerminal: {
+              launched: false,
+              transcriptFile: `${logFile}.terminal.txt`,
+              detail: reason,
+              readyEventFile,
+            },
+            failure: {
+              stage: "validation",
+              reason,
+              detail: {
+                name: visibleInfo.registerAs,
+                pid: preflight.entry.pid,
+                planPath: preflight.entry.planPath,
+                registeredAt: preflight.entry.registeredAt,
+              },
+            },
+          };
+          process.stdout.write(JSON.stringify(envelope, null, 2) + "\n");
+          process.exit(1);
+        }
+        if (preflight.kind === "stale") {
+          await registry.removeEntry(visibleInfo.registerAs);
+        }
+      }
       await mkdir(dirname(readyEventFile), { recursive: true });
       await rm(readyEventFile, { force: true });
       const launch = process.platform === "win32"

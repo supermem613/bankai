@@ -10,6 +10,8 @@ import { runLogsCommand } from "../../src/commands/logs.js";
 import { runStopCommand } from "../../src/commands/stop.js";
 import { createNodeEnv } from "../../src/env-runtime/env.js";
 import { createRegistryStore } from "../../src/registry/store.js";
+import { captureFingerprint } from "../../src/fingerprint.js";
+import type { RegistryEntry } from "../../src/registry/types.js";
 
 import "../../src/steps/index.js";
 import "../../src/assertions/index.js";
@@ -544,5 +546,308 @@ describe("orchestrator: attached-process plans", () => {
     assert.equal(entry.status?.done, true);
     assert.equal(entry.status?.ready, false);
     assert.match(entry.status?.detail ?? "", /code 7/);
+  });
+
+  it("persists a process fingerprint on the registry entry while the attached child is alive", async () => {
+    const readyFile = join(tmp, "fp-ready.json");
+    const planPath = join(tmp, "attached-fp.plan.json");
+    writeFileSync(
+      planPath,
+      JSON.stringify({
+        schemaVersion: "1",
+        name: "attached-fp",
+        steps: [
+          {
+            id: "dev",
+            kind: "attached-process",
+            registerAs: "attached-fp",
+            command: process.execPath,
+            args: ["-e", `
+              const fs = require('node:fs');
+              fs.writeFileSync(${JSON.stringify(readyFile)}, '{}');
+              setInterval(() => {}, 1000);
+            `],
+            timeoutMs: 5000,
+          },
+        ],
+      }),
+    );
+    const env = { ...createNodeEnv(), home: tmp };
+    const runPromise = runRunCommand({
+      planPath,
+      env,
+      logDir: join(tmp, "logs"),
+      repoRoot: tmp,
+      visibleAttachedTerminal: true,
+    });
+    try {
+      await waitForFile(readyFile);
+      await waitForRegistryEntry({ env, logDir: join(tmp, "logs"), repoRoot: tmp, name: "attached-fp" });
+      // Read the raw entry through the store; status reshapes the entry
+      // and drops fields not used by the status surface.
+      const file = await createRegistryStore({ env }).read();
+      const entry = file.entries["attached-fp"];
+      assert.ok(entry, "entry should be registered while the child is alive");
+      // Fingerprint capture is best-effort. On supported hosts (linux,
+      // darwin, win32) it should succeed. If it returns undefined the
+      // test environment cannot capture identity at all, in which case
+      // the absence is acceptable.
+      const probe = await captureFingerprint({ pid: entry.pid, env });
+      if (probe) {
+        assert.ok(entry.fingerprint, "fingerprint should be persisted alongside pid");
+        assert.equal(typeof entry.fingerprint?.creationTime, "string");
+        assert.equal(typeof entry.fingerprint?.commandLine, "string");
+      }
+    } finally {
+      await runStopCommand({ name: "attached-fp", env, logDir: join(tmp, "logs"), repoRoot: tmp, graceMs: 5000 });
+      await runPromise;
+    }
+  });
+
+  it("hard-fails the step when registerAs is already held by a live process with matching fingerprint", async () => {
+    const fingerprint = await captureFingerprint({ pid: process.pid, env: createNodeEnv() });
+    if (!fingerprint) {
+      // Cannot construct a matching fingerprint on this host; skip.
+      return;
+    }
+    const env = { ...createNodeEnv(), home: tmp };
+    const seeded: RegistryEntry = {
+      name: "augloop-workflows",
+      planName: "dev-loop",
+      planPath: "/abs/augloop-workflows.dev-loop.json",
+      cwd: tmp,
+      envKind: "attached-process",
+      registeredAt: "2026-05-26T18:00:00.000Z",
+      pid: process.pid,
+      command: "augloop",
+      args: ["run", "odsp-copilot"],
+      workDir: tmp,
+      logFile: join(tmp, "preexisting.log"),
+      logStartOffset: 0,
+      fingerprint,
+    };
+    await createRegistryStore({ env }).putEntry(seeded);
+
+    const marker = join(tmp, "must-not-spawn.txt");
+    const planPath = join(tmp, "hard-fail.plan.json");
+    writeFileSync(
+      planPath,
+      JSON.stringify({
+        schemaVersion: "1",
+        name: "hard-fail",
+        steps: [
+          {
+            id: "dev",
+            kind: "attached-process",
+            registerAs: "augloop-workflows",
+            command: process.execPath,
+            args: ["-e", `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'oops'); process.exit(0);`],
+            timeoutMs: 5000,
+          },
+        ],
+      }),
+    );
+
+    const envelope = await runRunCommand({
+      planPath,
+      env,
+      logDir: join(tmp, "logs"),
+      repoRoot: tmp,
+      visibleAttachedTerminal: true,
+    });
+
+    assert.equal(envelope.ok, false, JSON.stringify(envelope));
+    const step = envelope.steps[0];
+    assert.equal(step.ok, false);
+    const detail = step.attachedProcess?.detail ?? "";
+    assert.match(detail, /augloop-workflows/);
+    assert.match(detail, new RegExp(String(process.pid)));
+    assert.match(detail, /bankai stop augloop-workflows/);
+    assert.equal(existsSync(marker), false, "step must not have spawned the child");
+
+    const after = await createRegistryStore({ env }).read();
+    assert.deepEqual(after.entries["augloop-workflows"], seeded, "preexisting entry must be intact");
+  });
+
+  it("honors continueOnFail when the hard-fail step is followed by another step", async () => {
+    const fingerprint = await captureFingerprint({ pid: process.pid, env: createNodeEnv() });
+    if (!fingerprint) {
+      return;
+    }
+    const env = { ...createNodeEnv(), home: tmp };
+    await createRegistryStore({ env }).putEntry({
+      name: "occupied",
+      planName: "p",
+      planPath: "/abs/p.json",
+      cwd: tmp,
+      envKind: "attached-process",
+      registeredAt: "2026-05-26T18:00:00.000Z",
+      pid: process.pid,
+      command: "node",
+      args: ["x"],
+      workDir: tmp,
+      logFile: join(tmp, "log.txt"),
+      logStartOffset: 0,
+      fingerprint,
+    });
+    const planPath = join(tmp, "continue-on-fail.plan.json");
+    const sentinel = join(tmp, "sentinel.txt");
+    writeFileSync(
+      planPath,
+      JSON.stringify({
+        schemaVersion: "1",
+        name: "continue-on-fail",
+        steps: [
+          {
+            id: "dev",
+            kind: "attached-process",
+            registerAs: "occupied",
+            command: process.execPath,
+            args: ["-e", "process.exit(0)"],
+            continueOnFail: true,
+            timeoutMs: 5000,
+          },
+          {
+            id: "after",
+            kind: "shell",
+            command: process.execPath,
+            args: ["-e", `require('node:fs').writeFileSync(${JSON.stringify(sentinel)}, 'ran');`],
+          },
+        ],
+      }),
+    );
+    const envelope = await runRunCommand({
+      planPath,
+      env,
+      logDir: join(tmp, "logs"),
+      repoRoot: tmp,
+      visibleAttachedTerminal: true,
+    });
+    // continueOnFail only governs whether later steps run. The envelope
+    // still reports ok:false because at least one step failed; matches
+    // run-scoped.test.ts "continueOnFail allows later steps to run".
+    assert.equal(envelope.ok, false);
+    assert.equal(envelope.steps[0].ok, false);
+    assert.match(envelope.steps[0].attachedProcess?.detail ?? "", /already running/);
+    assert.equal(envelope.steps[1].ok, true);
+    assert.equal(existsSync(sentinel), true, "downstream step must have run after continueOnFail");
+  });
+
+  it("prunes a stale registry entry whose pid is dead and proceeds to spawn", async () => {
+    // Find a guaranteed-dead pid by probing high pid numbers.
+    let deadPid = 0;
+    for (const candidate of [99999, 99998, 99997, 99996, 99995]) {
+      try {
+        process.kill(candidate, 0);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === "ESRCH") {
+          deadPid = candidate;
+          break;
+        }
+      }
+    }
+    if (deadPid === 0) {
+      return;
+    }
+    const env = { ...createNodeEnv(), home: tmp };
+    await createRegistryStore({ env }).putEntry({
+      name: "stale-dead",
+      planName: "p",
+      planPath: "/abs/p.json",
+      cwd: tmp,
+      envKind: "attached-process",
+      registeredAt: "2026-05-26T18:00:00.000Z",
+      pid: deadPid,
+      command: "node",
+      args: [],
+      workDir: tmp,
+      logFile: join(tmp, "log.txt"),
+      logStartOffset: 0,
+      fingerprint: { creationTime: "synthetic", commandLine: "synthetic" },
+    });
+
+    const planPath = join(tmp, "stale-dead.plan.json");
+    writeFileSync(
+      planPath,
+      JSON.stringify({
+        schemaVersion: "1",
+        name: "stale-dead",
+        steps: [
+          {
+            id: "dev",
+            kind: "attached-process",
+            registerAs: "stale-dead",
+            command: process.execPath,
+            args: ["-e", "process.exit(0)"],
+            timeoutMs: 5000,
+          },
+        ],
+      }),
+    );
+    const envelope = await runRunCommand({
+      planPath,
+      env,
+      logDir: join(tmp, "logs"),
+      repoRoot: tmp,
+      visibleAttachedTerminal: true,
+    });
+    assert.equal(envelope.ok, true, JSON.stringify(envelope.failure));
+    assert.equal(envelope.steps[0].attachedProcess?.exitCode, 0);
+  });
+
+  it("prunes a stale entry whose pid is alive but fingerprint mismatches, then spawns fresh", async () => {
+    const env = { ...createNodeEnv(), home: tmp };
+    await createRegistryStore({ env }).putEntry({
+      name: "stale-mismatch",
+      planName: "p",
+      planPath: "/abs/p.json",
+      cwd: tmp,
+      envKind: "attached-process",
+      registeredAt: "2026-05-26T18:00:00.000Z",
+      // PID alive (the test runner) but fingerprint synthetic and
+      // therefore guaranteed not to match the real captured fingerprint
+      // of the test runner.
+      pid: process.pid,
+      command: "node",
+      args: [],
+      workDir: tmp,
+      logFile: join(tmp, "log.txt"),
+      logStartOffset: 0,
+      fingerprint: {
+        creationTime: "synthetic-cannot-match",
+        commandLine: "synthetic-cannot-match",
+      },
+    });
+
+    const planPath = join(tmp, "stale-mismatch.plan.json");
+    writeFileSync(
+      planPath,
+      JSON.stringify({
+        schemaVersion: "1",
+        name: "stale-mismatch",
+        steps: [
+          {
+            id: "dev",
+            kind: "attached-process",
+            registerAs: "stale-mismatch",
+            command: process.execPath,
+            args: ["-e", "process.exit(0)"],
+            timeoutMs: 5000,
+          },
+        ],
+      }),
+    );
+    const envelope = await runRunCommand({
+      planPath,
+      env,
+      logDir: join(tmp, "logs"),
+      repoRoot: tmp,
+      visibleAttachedTerminal: true,
+    });
+    assert.equal(envelope.ok, true, JSON.stringify(envelope.failure));
+    assert.equal(envelope.steps[0].attachedProcess?.exitCode, 0);
+    // After the run, the entry should be removed (ok-path settle behavior).
+    const after = await createRegistryStore({ env }).read();
+    assert.equal(after.entries["stale-mismatch"], undefined);
   });
 });
