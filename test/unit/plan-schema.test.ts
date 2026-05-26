@@ -254,6 +254,19 @@ describe("plan schema", () => {
     assert.ok(r.success, JSON.stringify(r.success ? null : r.error.issues));
   });
 
+  it("rejects readyEventFile on attached-process step (field removed in 0.6.0)", () => {
+    assertRejectsWith(parsePlan({
+      schemaVersion: "1",
+      name: "p",
+      steps: [{
+        id: "dev",
+        kind: "attached-process",
+        command: "node",
+        readyEventFile: { binding: "workspace", path: "ready.json" },
+      }],
+    }), "Unrecognized key");
+  });
+
   it("rejects unknown top-level plan keys", () => {
     assertRejectsWith(parsePlan({
       schemaVersion: "1",

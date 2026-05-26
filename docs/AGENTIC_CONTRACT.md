@@ -96,6 +96,11 @@ tracked descendants when needed.
   tests before adding a new product-specific primitive.
 - Use automatic bindings such as `bankaiOutputDir`, `bankaiRunId`, and
   `bankaiLogFile` for generated artifacts and run-scoped sentinels.
+- `attached-process` steps with `announceReady` (the default) get their ready
+  event written to
+  `<home>/.bankai/out/agents/<registerAs-or-planName>/ready.json` by Bankai.
+  The path is not configurable, keeping the workspace free of `.bankai/`
+  artifacts.
 - Mark cleanup steps with `alwaysRun` when they must execute after a prior
   failure.
 - Keep secrets out of plans, registry entries, logs, and assertions.

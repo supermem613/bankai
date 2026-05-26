@@ -94,6 +94,12 @@ workflow code:
 `bankaiRunId`, `bankaiLogFile`, `bankaiOutputDir`, `bankaiPlanDir`, and
 `bankaiWorkDir`.
 
+`attached-process` steps that set `announceReady` (the default) get their
+ready event written to
+`<home>/.bankai/out/agents/<registerAs-or-planName>/ready.json`. The path is
+bankai-managed and not configurable; the workspace stays free of `.bankai/`
+artifacts.
+
 ## Managed-process graceful stdin stop
 
 Interactive dev servers that require specific stdin input to exit gracefully

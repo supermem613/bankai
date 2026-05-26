@@ -13,6 +13,7 @@ import type { ProcessFingerprint, ProcessHandle, ReadinessObservation } from "..
 import { CommandNotFoundError, resolveCommand } from "../spawn/resolve-command.js";
 import { captureFingerprint } from "../fingerprint.js";
 import { checkRegisteredAlive, formatAlreadyRunningMessage } from "../registry/preflight.js";
+import type { Env } from "../env-runtime/env.js";
 
 const WINDOWS_CTRL_C_EXIT = -1_073_741_510;
 const WINDOWS_CTRL_C_EXIT_UNSIGNED = 3_221_225_786;
@@ -59,7 +60,6 @@ export const AttachedProcessStepV1Schema = z.object({
   readyWhen: z.array(OutputMatchSchema).default([]),
   failWhen: z.array(OutputMatchSchema).default([]),
   verifyReady: z.array(ReadinessProbeRefSchema).default([]),
-  readyEventFile: BindingPathRefSchema.optional(),
   announceReady: z.boolean().default(true),
   continueOnFail: z.boolean().optional(),
   alwaysRun: z.boolean().optional(),
@@ -586,6 +586,17 @@ async function runAttachedProcess(spec: AttachedProcessStepV1, ctx: StepContext)
   });
 }
 
+// Bankai-managed location for the ready event. Lives under the home-rooted
+// out tree so plan authors never have to invent a path or contaminate the
+// workspace with a .bankai directory. Keyed by registerName (registerAs when
+// present, planName otherwise) so concurrent plans against distinct names
+// get isolated files and repeat invocations against the same name overwrite
+// the prior marker. There is intentionally no plan-author override: the
+// contents of this file are bankai-internal and have no external consumer.
+export function defaultReadyEventFile(env: Env, registerName: string): string {
+  return join(env.home, ".bankai", "out", "agents", registerName, "ready.json");
+}
+
 async function publishReadyEvent(
   spec: AttachedProcessStepV1,
   ctx: StepContext,
@@ -602,8 +613,9 @@ async function publishReadyEvent(
     readyAt: ctx.env.clock.isoNow(),
   };
   ctx.logger.emit("bankai.ready", event);
-  if (spec.readyEventFile) {
-    const eventFile = resolveBindingPath(spec.readyEventFile, { workDir: ctx.workDir, bindings: ctx.bindings });
+  if (spec.announceReady) {
+    const registerName = spec.registerAs ?? ctx.planName;
+    const eventFile = defaultReadyEventFile(ctx.env, registerName);
     await writeJsonAtomic(eventFile, event);
   }
   if (ctx.visibleReadyEventFile) {

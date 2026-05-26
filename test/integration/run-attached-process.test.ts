@@ -452,7 +452,6 @@ describe("orchestrator: attached-process plans", () => {
 
   it("publishes readiness after output match and then verifies configured probes once", async () => {
     const port = await getFreePort();
-    const readyFile = join(tmp, "events", "ready.json");
     const planPath = join(tmp, "attached-ready.plan.json");
     writeFileSync(
       planPath,
@@ -463,6 +462,7 @@ describe("orchestrator: attached-process plans", () => {
           {
             id: "dev",
             kind: "attached-process",
+            registerAs: "attached-ready-svc",
             command: process.execPath,
             args: ["-e", `
               const net = require('node:net');
@@ -472,16 +472,17 @@ describe("orchestrator: attached-process plans", () => {
             `],
             readyWhen: [{ id: "ready-line", contains: "Press CTRL-C to stop" }],
             verifyReady: [{ kind: "port", id: "server", host: "127.0.0.1", port, timeoutMs: 1000 }],
-            readyEventFile: readyFile,
-            announceReady: false,
+            announceReady: true,
             timeoutMs: 5000,
           },
         ],
       }),
     );
 
-    const envelope = await runRunCommand({ planPath, env: createNodeEnv(), logDir: join(tmp, "logs"), repoRoot: tmp, visibleAttachedTerminal: true });
+    const env = { ...createNodeEnv(), home: tmp };
+    const envelope = await runRunCommand({ planPath, env, logDir: join(tmp, "logs"), repoRoot: tmp, visibleAttachedTerminal: true });
     assert.equal(envelope.ok, true, JSON.stringify(envelope.failure));
+    const readyFile = join(tmp, ".bankai", "out", "agents", "attached-ready-svc", "ready.json");
     assert.ok(existsSync(readyFile), "ready event file should be written after output readiness and port verification");
     const ready = JSON.parse(readFileSync(readyFile, "utf8"));
     assert.equal(ready.match.id, "ready-line");
@@ -849,5 +850,119 @@ describe("orchestrator: attached-process plans", () => {
     // After the run, the entry should be removed (ok-path settle behavior).
     const after = await createRegistryStore({ env }).read();
     assert.equal(after.entries["stale-mismatch"], undefined);
+  });
+
+  it("writes the default ready event file under <home>/.bankai/out/agents/<registerAs>/ready.json when no readyEventFile is set", async () => {
+    const port = await getFreePort();
+    const planPath = join(tmp, "attached-default-ready.plan.json");
+    writeFileSync(
+      planPath,
+      JSON.stringify({
+        schemaVersion: "1",
+        name: "attached-default-ready",
+        steps: [
+          {
+            id: "dev",
+            kind: "attached-process",
+            registerAs: "default-ready-svc",
+            command: process.execPath,
+            args: ["-e", `
+              const net = require('node:net');
+              const server = net.createServer();
+              server.listen(${port}, '127.0.0.1', () => console.log('Press CTRL-C to stop'));
+              setTimeout(() => server.close(() => process.exit(0)), 250);
+            `],
+            readyWhen: [{ id: "ready-line", contains: "Press CTRL-C to stop" }],
+            verifyReady: [{ kind: "port", id: "server", host: "127.0.0.1", port, timeoutMs: 1000 }],
+            announceReady: true,
+            timeoutMs: 5000,
+          },
+        ],
+      }),
+    );
+
+    const env = { ...createNodeEnv(), home: tmp };
+    const envelope = await runRunCommand({ planPath, env, logDir: join(tmp, "logs"), repoRoot: tmp, visibleAttachedTerminal: true });
+    assert.equal(envelope.ok, true, JSON.stringify(envelope.failure));
+
+    const defaultPath = join(tmp, ".bankai", "out", "agents", "default-ready-svc", "ready.json");
+    assert.ok(existsSync(defaultPath), `expected default ready file at ${defaultPath}`);
+    const ready = JSON.parse(readFileSync(defaultPath, "utf8"));
+    assert.equal(ready.event, "bankai.ready");
+    assert.equal(ready.match.id, "ready-line");
+    assert.equal(ready.observations[0].ok, true);
+    assert.equal(ready.planName, "attached-default-ready");
+    assert.equal(ready.stepId, "dev");
+  });
+
+  it("uses planName when no registerAs is set for the default ready event file path", async () => {
+    const port = await getFreePort();
+    const planPath = join(tmp, "attached-default-ready-by-plan.plan.json");
+    writeFileSync(
+      planPath,
+      JSON.stringify({
+        schemaVersion: "1",
+        name: "default-ready-by-plan",
+        steps: [
+          {
+            id: "dev",
+            kind: "attached-process",
+            command: process.execPath,
+            args: ["-e", `
+              const net = require('node:net');
+              const server = net.createServer();
+              server.listen(${port}, '127.0.0.1', () => console.log('Press CTRL-C to stop'));
+              setTimeout(() => server.close(() => process.exit(0)), 250);
+            `],
+            readyWhen: [{ id: "ready-line", contains: "Press CTRL-C to stop" }],
+            announceReady: true,
+            timeoutMs: 5000,
+          },
+        ],
+      }),
+    );
+
+    const env = { ...createNodeEnv(), home: tmp };
+    const envelope = await runRunCommand({ planPath, env, logDir: join(tmp, "logs"), repoRoot: tmp, visibleAttachedTerminal: true });
+    assert.equal(envelope.ok, true, JSON.stringify(envelope.failure));
+
+    const defaultPath = join(tmp, ".bankai", "out", "agents", "default-ready-by-plan", "ready.json");
+    assert.ok(existsSync(defaultPath), `expected default ready file at ${defaultPath}`);
+  });
+
+  it("does not write the default ready file when announceReady is false", async () => {
+    const port = await getFreePort();
+    const planPath = join(tmp, "attached-silent-ready.plan.json");
+    writeFileSync(
+      planPath,
+      JSON.stringify({
+        schemaVersion: "1",
+        name: "attached-silent-ready",
+        steps: [
+          {
+            id: "dev",
+            kind: "attached-process",
+            registerAs: "silent-ready-svc",
+            command: process.execPath,
+            args: ["-e", `
+              const net = require('node:net');
+              const server = net.createServer();
+              server.listen(${port}, '127.0.0.1', () => console.log('Press CTRL-C to stop'));
+              setTimeout(() => server.close(() => process.exit(0)), 250);
+            `],
+            readyWhen: [{ id: "ready-line", contains: "Press CTRL-C to stop" }],
+            announceReady: false,
+            timeoutMs: 5000,
+          },
+        ],
+      }),
+    );
+
+    const env = { ...createNodeEnv(), home: tmp };
+    const envelope = await runRunCommand({ planPath, env, logDir: join(tmp, "logs"), repoRoot: tmp, visibleAttachedTerminal: true });
+    assert.equal(envelope.ok, true, JSON.stringify(envelope.failure));
+
+    const defaultPath = join(tmp, ".bankai", "out", "agents", "silent-ready-svc", "ready.json");
+    assert.equal(existsSync(defaultPath), false, "default ready file must not be written when announceReady is false");
   });
 });
