@@ -1,8 +1,9 @@
 import { describe, it } from "node:test";
 import { strict as assert } from "node:assert";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
+import { execSync } from "node:child_process";
 import { CommandNotFoundError, resolveCommand } from "../../src/spawn/resolve-command.js";
 import type { Env } from "../../src/env-runtime/env.js";
 
@@ -223,5 +224,76 @@ describe("resolveCommand (cross-platform shim resolution)", () => {
     }
     assert.ok(caught instanceof CommandNotFoundError);
     assert.ok((caught as Error).message.includes("totally-fake-cli"));
+  });
+
+  // Reproduces the Windows MSIX/AppX execution alias case (e.g. pwsh installed
+  // via Microsoft Store / winget): the PATH entry is a reparse point whose
+  // target cannot be stat()'d by Node, but the directory entry exists and the
+  // OS resolves it on CreateProcess. We exercise the same condition two ways:
+  // (a) using a real AppExecLink on the host when one is present, discovered
+  // via where.exe so it is unaffected by the test runner's HOME sandbox, and
+  // (b) falling back to a symlink to a non-existent target, which produces
+  // the same existsSync=false / lstatSync=ok signature. Both require
+  // resolveCommand to accept the PATH entry instead of throwing
+  // CommandNotFoundError.
+  it("resolves a PATH entry whose target is unreachable but whose directory entry exists (AppX execution alias)", (t) => {
+    let realAlias: string | undefined;
+    if (process.platform === "win32") {
+      try {
+        const out = execSync("where.exe pwsh.exe", { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+        for (const line of out.split(/\r?\n/).map((s) => s.trim()).filter(Boolean)) {
+          if (!existsSync(line)) {
+            try {
+              lstatSync(line);
+              realAlias = line;
+              break;
+            } catch {
+              // keep looking
+            }
+          }
+        }
+      } catch { /* where.exe miss is fine; fall through to symlink path */ }
+    }
+
+    if (realAlias) {
+      const aliasDir = dirname(realAlias);
+      const aliasBase = basename(realAlias, ".exe");
+      const env = makeEnv({
+        platform: "win32",
+        env: { PATH: aliasDir, PATHEXT: ".COM;.EXE;.CMD" },
+      });
+      const r = resolveCommand(aliasBase, ["-v"], env);
+      assert.equal(r.command, realAlias);
+      assert.deepEqual(r.args, ["-v"]);
+      assert.equal(r.windowsVerbatimArguments, undefined);
+      assert.equal(r.originalCommand, aliasBase);
+      return;
+    }
+
+    const dir = mkdtempSync(join(tmpdir(), "bankai-resolve-appx-"));
+    try {
+      const stub = join(dir, "pwsh.exe");
+      const ghostTarget = join(dir, "does-not-exist-target.exe");
+      try {
+        symlinkSync(ghostTarget, stub, "file");
+      } catch (err) {
+        rmSync(dir, { recursive: true, force: true });
+        t.skip(`symlink creation not permitted and no real AppExecLink available: ${(err as NodeJS.ErrnoException).code}`);
+        return;
+      }
+      const env = makeEnv({
+        platform: "win32",
+        env: { PATH: dir, PATHEXT: ".COM;.EXE;.CMD" },
+      });
+
+      const r = resolveCommand("pwsh", ["-v"], env);
+
+      assert.equal(r.command, stub);
+      assert.deepEqual(r.args, ["-v"]);
+      assert.equal(r.windowsVerbatimArguments, undefined);
+      assert.equal(r.originalCommand, "pwsh");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

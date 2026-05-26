@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, lstatSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import type { Env } from "../env-runtime/env.js";
 
@@ -69,20 +69,40 @@ function pathExts(env: Env): string[] {
     : [""];
 }
 
+function quoteCmdArg(value: string): string {
+  return `"${value.replace(/"/g, '""')}"`;
+}
+
+// pathEntryExists: existsSync follows the reparse target, which fails with
+// EACCES on Windows AppX execution alias stubs (e.g. the 0-byte pwsh.exe
+// reparse point under %LOCALAPPDATA%\Microsoft\WindowsApps that the Microsoft
+// Store / winget MSIX install drops on PATH). The kernel resolves these on
+// CreateProcess, so spawn works directly against the stub even though stat
+// does not. Fall back to lstatSync so resolver accepts the entry whenever the
+// directory entry itself exists, regardless of whether the target is
+// reachable through normal stat.
+function pathEntryExists(candidate: string): boolean {
+  if (existsSync(candidate)) {
+    return true;
+  }
+  try {
+    lstatSync(candidate);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function findOnPath(env: Env, command: string): string | undefined {
   for (const dir of pathDirs(env)) {
     for (const ext of pathExts(env)) {
       const candidate = join(dir, command + ext);
-      if (existsSync(candidate)) {
+      if (pathEntryExists(candidate)) {
         return candidate;
       }
     }
   }
   return undefined;
-}
-
-function quoteCmdArg(value: string): string {
-  return `"${value.replace(/"/g, '""')}"`;
 }
 
 function wrapInComSpec(env: Env, executable: string, args: string[], originalCommand: string, originalArgs: string[]): ResolvedCommand {
@@ -115,7 +135,7 @@ export function resolveCommand(command: string, args: string[], env: Env): Resol
   const originalArgs = args;
 
   if (isPathQualified(command)) {
-    if (!existsSync(command)) {
+    if (!pathEntryExists(command)) {
       throw new CommandNotFoundError(command, [], []);
     }
     if (shouldWrap(env, command)) {
