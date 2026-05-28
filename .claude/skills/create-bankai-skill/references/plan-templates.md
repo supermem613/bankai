@@ -34,6 +34,12 @@
 }
 ```
 
+Run with a bindings file or inline object shorthand:
+
+```powershell
+bankai run plans\local-dev-loop.json --bindings-json '{"workspace":"C:\\repo"}'
+```
+
 ## Test plan template
 
 ```jsonc

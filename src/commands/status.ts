@@ -43,6 +43,12 @@ interface TailResult {
   raw?: string;
 }
 
+interface LogSummary {
+  lastEvent: string;
+  lastFatalDetail?: string;
+  lastProgress?: string;
+}
+
 async function readTail(path: string | undefined): Promise<TailResult> {
   if (!path) {
     return { exists: false };
@@ -70,13 +76,25 @@ function summarizeLifecycle(entry: RegistryEntry, alive: boolean, rawLog: string
   status: StatusLifecycle;
   steps: StatusStepSummary[];
 } {
+  const logSummary = summarizeLog(rawLog);
   if (!alive) {
     return {
       status: {
         phase: entry.evidence?.lastResult?.ok === false ? "failed" : "stale",
         done: true,
         ready: false,
-        detail: entry.evidence?.lastResult?.detail ?? "registered process is not alive",
+        detail: entry.evidence?.lastResult?.detail ?? logSummary.lastFatalDetail ?? "registered process is not alive",
+      },
+      steps: [],
+    };
+  }
+  if (logSummary.lastFatalDetail) {
+    return {
+      status: {
+        phase: "failed",
+        done: true,
+        ready: false,
+        detail: logSummary.lastFatalDetail,
       },
       steps: [],
     };
@@ -87,7 +105,9 @@ function summarizeLifecycle(entry: RegistryEntry, alive: boolean, rawLog: string
         phase: "launching",
         done: false,
         ready: false,
-        detail: "visible terminal launched. Waiting for child runner to register the live process.",
+        detail: logSummary.lastProgress
+          ? `visible terminal launched. Latest child progress: ${logSummary.lastProgress}`
+          : "visible terminal launched. Waiting for child runner to register the live process.",
       },
       steps: [],
     };
@@ -97,7 +117,7 @@ function summarizeLifecycle(entry: RegistryEntry, alive: boolean, rawLog: string
   let ready = false;
   let done = false;
   let failed = false;
-  let lastEvent = "";
+  let lastEvent = logSummary.lastEvent;
   const steps = new Map<string, StatusStepSummary>();
   for (const line of (rawLog ?? "").split(/\r?\n/)) {
     if (!line.trim()) {
@@ -147,7 +167,7 @@ function summarizeLifecycle(entry: RegistryEntry, alive: boolean, rawLog: string
   }
   const stepList = [...steps.values()];
   if (failed) {
-    return { status: { phase: "failed", currentStepId, currentStepKind, done: true, ready, detail: `last event: ${lastEvent || "unknown"}` }, steps: stepList };
+    return { status: { phase: "failed", currentStepId, currentStepKind, done: true, ready, detail: logSummary.lastFatalDetail ?? `last event: ${lastEvent || "unknown"}` }, steps: stepList };
   }
   if (done) {
     return { status: { phase: "done", currentStepId, currentStepKind, done: true, ready, detail: `last event: ${lastEvent || "unknown"}` }, steps: stepList };
@@ -156,9 +176,97 @@ function summarizeLifecycle(entry: RegistryEntry, alive: boolean, rawLog: string
     return { status: { phase: "ready", currentStepId, currentStepKind, done: false, ready: true, detail: `current step ${currentStepId ?? "unknown"} is ready and still running` }, steps: stepList };
   }
   if (currentStepId) {
-    return { status: { phase: "starting", currentStepId, currentStepKind, done: false, ready: false, detail: `current step ${currentStepId} has started and is not ready yet` }, steps: stepList };
+    return {
+      status: {
+        phase: "starting",
+        currentStepId,
+        currentStepKind,
+        done: false,
+        ready: false,
+        detail: logSummary.lastProgress
+          ? `current step ${currentStepId} is still starting. Latest child progress: ${logSummary.lastProgress}`
+          : `current step ${currentStepId} has started and is not ready yet`,
+      },
+      steps: stepList,
+    };
   }
   return { status: { phase: "running", done: false, ready: false, detail: "process is alive" }, steps: stepList };
+}
+
+function summarizeLog(rawLog: string | undefined): LogSummary {
+  const summary: LogSummary = { lastEvent: "" };
+  for (const line of (rawLog ?? "").split(/\r?\n/)) {
+    if (!line.trim()) {
+      continue;
+    }
+    try {
+      const event = JSON.parse(line) as {
+        event?: string;
+        reason?: string;
+        detail?: unknown;
+        error?: string;
+        line?: string;
+        ok?: boolean;
+      };
+      summary.lastEvent = event.event ?? summary.lastEvent;
+      if (typeof event.line === "string") {
+        const progress = extractProgressLine(event.line);
+        if (progress) {
+          summary.lastProgress = progress;
+        }
+      }
+      const fatal = fatalDetail(event);
+      if (fatal) {
+        summary.lastFatalDetail = fatal;
+      }
+    } catch {
+      continue;
+    }
+  }
+  return summary;
+}
+
+function fatalDetail(event: {
+  event?: string;
+  reason?: string;
+  detail?: unknown;
+  error?: string;
+  ok?: boolean;
+}): string | undefined {
+  if (event.event === "plan.load-error" || event.event === "bindings.load-error") {
+    return `${event.event}: ${event.reason ?? stringifyDetail(event.detail)}`;
+  }
+  if (event.event === "bindings.validation-error") {
+    return `${event.event}: ${stringifyDetail(event.detail)}`;
+  }
+  if (event.event === "step.attached-process.fail") {
+    return `${event.event}: ${event.error ?? stringifyDetail(event.detail)}`;
+  }
+  if ((event.event === "run.end" || event.event === "plan.end" || event.event === "step.end") && event.ok === false) {
+    return `${event.event}: failed`;
+  }
+  return undefined;
+}
+
+function stringifyDetail(detail: unknown): string {
+  if (typeof detail === "string") {
+    return detail;
+  }
+  if (detail === undefined) {
+    return "unknown";
+  }
+  return JSON.stringify(detail);
+}
+
+function extractProgressLine(line: string): string | undefined {
+  const sync = line.match(/sync\s*\[\d+\/\d+\]/i);
+  if (sync) {
+    return sync[0];
+  }
+  if (line.includes("Press CTRL-C to stop")) {
+    return "Press CTRL-C to stop";
+  }
+  return undefined;
 }
 
 export interface StatusRegistryEntry {

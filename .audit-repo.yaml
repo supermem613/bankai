@@ -10,6 +10,9 @@ targets:
   - file: README.md
     section: { heading: "Commands" }
     match: list_item
+  - file: docs/AGENTIC_CONTRACT.md
+    section: { heading: "Command model" }
+    match: code_token
 
 stale_terms:
   - term: "Reliable orchestration engine for dev-loop and test plan execution with environment plugins"

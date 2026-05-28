@@ -26,6 +26,7 @@ bankai status <name>
 bankai logs <name>
 bankai stop <name>
 bankai schema plan
+bankai schema bindings
 ```
 
 → See [authoring workflow](references/authoring-workflow.md) for the full sequence.
@@ -61,11 +62,14 @@ test or validation workflows.
 
 - The plan is schema-valid.
 - Machine-local paths are bindings, not literals.
+- Runtime bindings use either a bindings file, the original `{key,value}` array
+  shape, or object shorthand such as `{"workspace":"C:\\repo"}`.
 - Readiness and failure patterns live in the plan.
 - Every long-running step has a timeout.
 - The skill does not parse human terminal prose when the Bankai envelope already
   has structured fields.
 - Dev-loop skills explain that `bankai run` returns the startup proof and
-  `bankai status` is for later inspection.
+  `bankai status` is for later inspection. Status may include the latest
+  fatal/progress detail, but detailed log text stays in `bankai logs`.
 
 → See [authoring workflow](references/authoring-workflow.md) for validation gates.

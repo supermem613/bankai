@@ -67,6 +67,17 @@ describe("visible terminal launcher", () => {
     });
   });
 
+  it("passes the parent ready event file to the visible terminal child", () => {
+    const command = buildVisibleTerminalSpawnCommand({
+      ...launchOpts,
+      pathEnv: "",
+      pathext: ".EXE",
+      visibleReadyEventFile: "C:\\Users\\alice\\.bankai\\logs\\run.jsonl.ready.json",
+    });
+
+    assert.match(command.args.at(-1) ?? "", /'--visible-ready-event-file' 'C:\\Users\\alice\\.bankai\\logs\\run\.jsonl\.ready\.json'/);
+  });
+
   it("creates a launch transcript marker without wrapping the child command", () => {
     const command = buildVisibleTerminalPowerShellCommand(launchOpts);
 

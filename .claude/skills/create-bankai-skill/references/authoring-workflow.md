@@ -12,9 +12,12 @@
    - which Bankai command to call
    - how to interpret the envelope
    - what not to do
-5. Use `bankai schema plan` if the plan shape is uncertain.
+5. Use `bankai schema plan` if the plan shape is uncertain. Use
+   `bankai schema bindings` if runtime binding shape is uncertain.
 6. Validate with `bankai doctor --plan <plan>`.
-7. Run with `bankai run <plan>`.
+7. Run with `bankai run <plan>`. Supply machine-local paths with either a
+   bindings file, `--bindings-json '[{"key":"workspace","value":"C:\\repo"}]'`,
+   or object shorthand `--bindings-json '{"workspace":"C:\\repo"}'`.
 8. For dev-loop plans, verify stop with `bankai stop <name>`.
 
 ## Validation gates
@@ -22,6 +25,8 @@
 - The plan is schema-valid.
 - Machine-local paths are bindings, not literals.
 - Readiness and failure patterns live in the plan.
+- Visible-terminal failures before process launch must surface as a structured
+  Bankai failure, not as a silent wait.
 - Every long-running step has a timeout.
 - The skill reports total elapsed time from top-level `durationMs`.
 - Failure reports include the failed step id, failed step `durationMs`, `failure.reason`, and log path when present.

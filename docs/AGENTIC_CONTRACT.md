@@ -77,7 +77,8 @@ Agents should not call `bankai status` immediately after a successful
 `bankai run` just to prove startup. Use the `registry` entry returned by `run`.
 
 Use `bankai status [name]` later to inspect current state. Status is concise by
-design and should not include detailed log text.
+design: it may include the latest fatal event or recognized progress in
+`status.detail`, but detailed log text stays behind `bankai logs`.
 
 Use `bankai logs [name]` when detailed run or terminal output is needed.
 
@@ -89,6 +90,8 @@ tracked descendants when needed.
 
 - Generate schema-valid plans.
 - Use bindings for machine-local paths instead of hardcoding user directories.
+- Supply runtime bindings either as `--bindings-json '[{"key":"workspace","value":"C:\\repo"}]'`
+  or object shorthand `--bindings-json '{"workspace":"C:\\repo"}'`.
 - Put readiness and failure detection in the plan, not in agent-side polling.
 - Use explicit timeouts for long-running steps.
 - Prefer generic steps and assertions over product-specific plugins.
@@ -101,6 +104,11 @@ tracked descendants when needed.
   `<home>/.bankai/out/agents/<registerAs-or-planName>/ready.json` by Bankai.
   The path is not configurable, keeping the workspace free of `.bankai/`
   artifacts.
+- Visible-terminal parents must wait for the child ready/failure event. If
+  validation fails before process launch, the child writes an `ok:false` ready
+  event and the parent exits nonzero instead of waiting for the startup timeout.
+- Long attached-process startup is not a failure by itself. Agents should trust
+  `readyWhen`, `failWhen`, and `status.detail` progress such as `sync [X/Y]`.
 - Mark cleanup steps with `alwaysRun` when they must execute after a prior
   failure.
 - Keep secrets out of plans, registry entries, logs, and assertions.

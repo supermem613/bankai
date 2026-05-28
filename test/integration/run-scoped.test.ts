@@ -351,7 +351,6 @@ describe("orchestrator: scoped plans", () => {
         ],
       }),
     );
-    const { mkdirSync } = await import("node:fs");
     mkdirSync(workspace);
     const envelope = await runRunCommand({
       planPath,
@@ -362,6 +361,74 @@ describe("orchestrator: scoped plans", () => {
     });
     assert.equal(envelope.ok, true, JSON.stringify(envelope.failure));
     assert.equal(envelope.steps[0].shell?.stdoutTail.trim(), workspace);
+  });
+
+  it("runs with inline binding object shorthand", async () => {
+    const workspace = join(tmp, "workspace-object");
+    const planPath = join(tmp, "object-bindings.plan.json");
+    writeFileSync(
+      planPath,
+      JSON.stringify({
+        schemaVersion: "1",
+        name: "bound-cwd-object",
+        requires: { bindings: { workspace: { type: "path", required: true } } },
+        steps: [
+          {
+            id: "pwd",
+            kind: "shell",
+            cwd: { binding: "workspace" },
+            command: process.execPath,
+            args: ["-e", "process.stdout.write(process.cwd())"],
+          },
+        ],
+      }),
+    );
+    mkdirSync(workspace);
+    const envelope = await runRunCommand({
+      planPath,
+      env: createNodeEnv(),
+      logDir: join(tmp, "logs"),
+      repoRoot: tmp,
+      bindingsJson: JSON.stringify({ workspace }),
+    });
+    assert.equal(envelope.ok, true, JSON.stringify(envelope.failure));
+    assert.equal(envelope.steps[0].shell?.stdoutTail.trim(), workspace);
+  });
+
+  it("writes visible ready failure file when bindings validation fails before launch", async () => {
+    const readyEventFile = join(tmp, "startup-failed.ready.json");
+    const planPath = join(tmp, "startup-failed.plan.json");
+    writeFileSync(
+      planPath,
+      JSON.stringify({
+        schemaVersion: "1",
+        name: "startup-failed",
+        requires: { bindings: { workspace: { type: "path", required: true } } },
+        steps: [
+          {
+            id: "dev",
+            kind: "attached-process",
+            cwd: { binding: "workspace" },
+            command: process.execPath,
+            args: ["-e", "process.exit(0)"],
+          },
+        ],
+      }),
+    );
+    const envelope = await runRunCommand({
+      planPath,
+      env: createNodeEnv(),
+      logDir: join(tmp, "logs"),
+      repoRoot: tmp,
+      visibleAttachedTerminal: true,
+      visibleReadyEventFile: readyEventFile,
+      bindingsJson: "{\"workspace\":[]}",
+    });
+    assert.equal(envelope.ok, false);
+    assert.equal(envelope.failure?.stage, "validation");
+    const ready = JSON.parse(readFileSync(readyEventFile, "utf8")) as { ok?: boolean; failure?: { stage?: string } };
+    assert.equal(ready.ok, false);
+    assert.equal(ready.failure?.stage, "validation");
   });
 
   it("supports generic CLI args, write-file, JSON assertions, and always-run cleanup", async () => {

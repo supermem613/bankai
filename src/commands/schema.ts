@@ -59,8 +59,8 @@ function commandSchemaDocument(): unknown {
         summary: "Execute a Bankai plan to completion.",
         arguments: [{ name: "plan", required: true, description: "Path to a Bankai plan JSON file." }],
         options: commonEnvelopeOptions([
-          { name: "--bindings-file <path>", description: "JSON array of {key,value} bindings." },
-          { name: "--bindings-json <json>", description: "Inline JSON array of {key,value} bindings." },
+          { name: "--bindings-file <path>", description: "JSON array of {key,value} bindings or object shorthand." },
+          { name: "--bindings-json <json>", description: "Inline JSON array of {key,value} bindings or object shorthand." },
         ]),
         envelope: {
           command: "run",

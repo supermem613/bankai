@@ -28,9 +28,10 @@ machine-local paths in the skill text.
 
 1. Resolve the plan under this skill's `plans\` directory.
 2. Run `bankai doctor --plan <plan>`.
-3. Run `bankai run <plan>`.
+3. Run `bankai run <plan>` with required bindings. Inline bindings may use
+   object shorthand, e.g. `--bindings-json '{"workspace":"C:\\repo"}'`.
 4. Report `ok`, total elapsed time from top-level `durationMs`, failing step
-   duration or `failure.reason`, and log path.
+   duration or `failure.reason`, `status.detail` when present, and log path.
 
 ## Plans
 

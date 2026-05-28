@@ -1,6 +1,6 @@
 {
   "name": "bankai",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Agentic-first orchestration engine for reliable dev-loop, test, and tool workflows",
   "type": "module",
   "bin": {

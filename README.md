@@ -59,7 +59,7 @@ npm link    # makes `bankai` available globally
 - `run` - execute a plan. Attached dev-loop plans return after readiness or
   failure and include the registered handle summary in `registry`.
 - `status` - show concise registered-handle state: alive, phase, current step,
-  ready/done booleans, and log paths.
+  ready/done booleans, latest fatal/progress detail, and log paths.
 - `logs` - read detailed run and transcript log tails for registered handles.
 - `stop` - stop a registered handle by name. Attached processes use the
   Ctrl+C control path and verify tracked processes exit before clearing state.
@@ -94,11 +94,29 @@ workflow code:
 `bankaiRunId`, `bankaiLogFile`, `bankaiOutputDir`, `bankaiPlanDir`, and
 `bankaiWorkDir`.
 
+Runtime bindings can be supplied as the original array shape:
+
+```bash
+bankai run plan.json --bindings-json '[{"key":"workspace","value":"C:\\repo"}]'
+```
+
+or as object shorthand:
+
+```bash
+bankai run plan.json --bindings-json '{"workspace":"C:\\repo"}'
+```
+
 `attached-process` steps that set `announceReady` (the default) get their
 ready event written to
 `<home>/.bankai/out/agents/<registerAs-or-planName>/ready.json`. The path is
 bankai-managed and not configurable; the workspace stays free of `.bankai/`
 artifacts.
+
+When Bankai opens a visible terminal for an attached process, the parent run
+waits for the child readiness event. Validation failures before the child
+process launches are reported through that event and exit nonzero immediately.
+While a long startup is still healthy, the parent emits periodic waiting
+messages and relays recognized child progress such as `sync [X/Y]`.
 
 ## Managed-process graceful stdin stop
 

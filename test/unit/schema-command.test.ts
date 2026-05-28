@@ -21,7 +21,9 @@ describe("schema command", () => {
 
   it("keeps plan and bindings schemas available by explicit kind", () => {
     assert.ok((schemaDocument("plan") as { plan?: unknown }).plan);
-    assert.ok((schemaDocument("bindings") as { arrayShape?: unknown }).arrayShape);
+    const bindings = schemaDocument("bindings") as { arrayShape?: unknown; objectShorthand?: unknown };
+    assert.ok(bindings.arrayShape);
+    assert.ok(bindings.objectShorthand);
   });
 
   it("normalizes schema aliases and rejects unknown kinds", () => {

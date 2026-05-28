@@ -361,7 +361,7 @@ describe("orchestrator: attached-process plans", () => {
     const logFile = join(tmp, "logs", "child.jsonl");
     const transcriptFile = `${logFile}.terminal.txt`;
     mkdirSync(dirname(logFile), { recursive: true });
-    writeFileSync(logFile, '{"event":"launch.failed","reason":"attached not found"}\n');
+    writeFileSync(logFile, '{"event":"bindings.load-error","reason":"could not parse bindings: expected array"}\n');
     writeFileSync(transcriptFile, "attached not found\nPress Enter to close\n");
 
     const baseEnv = createNodeEnv();
@@ -395,6 +395,7 @@ describe("orchestrator: attached-process plans", () => {
       };
     };
     assert.equal(entry.statusEvidence, undefined);
+    assert.match((entry as { status?: { detail?: string } }).status?.detail ?? "", /bindings\.load-error/);
     assert.equal(entry.logs?.run?.path, logFile);
     assert.equal(entry.logs?.run?.exists, true);
     assert.equal(entry.logs?.transcript?.path, transcriptFile);
@@ -408,7 +409,7 @@ describe("orchestrator: attached-process plans", () => {
         transcript?: { tail?: string };
       };
     };
-    assert.match(logEntry.logs?.run?.tail ?? "", /launch\.failed/);
+    assert.match(logEntry.logs?.run?.tail ?? "", /bindings\.load-error/);
     assert.match(logEntry.logs?.transcript?.tail ?? "", /attached not found/);
   });
 

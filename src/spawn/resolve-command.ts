@@ -4,7 +4,7 @@ import type { Env } from "../env-runtime/env.js";
 
 // resolveCommand: cross-platform shim resolution for spawned commands. The
 // single source of truth used by shell, attached-process, and managed-process
-// so plans can use bare names (rush, kash, node, npm) regardless of host OS.
+// so plans can use bare names (rush, node, npm) regardless of host OS.
 //
 // Invariants the next editor must preserve:
 //   1. Path-qualified commands (containing / or \) are NEVER subject to PATH

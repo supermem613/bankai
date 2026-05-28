@@ -14,6 +14,7 @@ export interface VisibleTerminalLaunchOptions {
   logDir?: string;
   bindingsFile?: string;
   bindingsJson?: string;
+  visibleReadyEventFile?: string;
   out?: string;
 }
 
@@ -49,6 +50,7 @@ export function buildVisibleTerminalChildArgs(opts: VisibleTerminalLaunchOptions
     ["--log-dir", opts.logDir],
     ["--bindings-file", opts.bindingsFile],
     ["--bindings-json", opts.bindingsJson],
+    ["--visible-ready-event-file", opts.visibleReadyEventFile],
     ["--out", opts.out],
   ] as const) {
     if (typeof value === "string") {

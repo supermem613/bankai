@@ -30,6 +30,7 @@ export const BindingEntrySchema = z.object({
 }).strict();
 
 export const BindingsArraySchema = z.array(BindingEntrySchema);
+export const BindingsObjectSchema = z.record(BindingValueSchema);
 export type BindingEntry = z.infer<typeof BindingEntrySchema>;
 export type ResolvedBindings = Readonly<Record<string, BindingValue>>;
 
@@ -64,7 +65,20 @@ export type ResolveBindingsResult = ResolveBindingsResultOk | ResolveBindingsRes
 
 export function parseBindingsJson(json: string): BindingEntry[] {
   const parsed = JSON.parse(json) as unknown;
-  return BindingsArraySchema.parse(parsed);
+  const arrayResult = BindingsArraySchema.safeParse(parsed);
+  if (arrayResult.success) {
+    return arrayResult.data;
+  }
+  const objectResult = BindingsObjectSchema.safeParse(parsed);
+  if (objectResult.success && parsed !== null && !Array.isArray(parsed) && typeof parsed === "object") {
+    const entries = Object.entries(objectResult.data);
+    const emptyKey = entries.find(([key]) => key.length === 0);
+    if (emptyKey) {
+      throw new Error("binding object keys must not be empty");
+    }
+    return entries.map(([key, value]) => ({ key, value }));
+  }
+  throw arrayResult.error;
 }
 
 export async function readBindingsFile(opts: { env: Env; path: string }): Promise<BindingEntry[]> {
@@ -175,12 +189,17 @@ export function interpolateBindings(value: string, opts: { bindings: ResolvedBin
 
 export function bindingsSchemaDocument(): unknown {
   return {
-    description: "Bindings are supplied at run time as a JSON array. Plans declare required binding keys in requires.bindings.",
+    description: "Bindings are supplied at run time as a JSON array or object shorthand. Plans declare required binding keys in requires.bindings.",
     arrayShape: [
       { key: "workspace", value: "C:\\Users\\alice\\repos\\service" },
       { key: "devPort", value: 3000 },
       { key: "targetUrl", value: "https://example.test/app" },
     ],
+    objectShorthand: {
+      workspace: "C:\\Users\\alice\\repos\\service",
+      devPort: 3000,
+      targetUrl: "https://example.test/app",
+    },
     requirementShape: {
       schemaVersion: "1",
       name: "example",
@@ -196,6 +215,7 @@ export function bindingsSchemaDocument(): unknown {
     cli: {
       file: "bankai run plan.json --bindings-file bindings.local.json",
       inline: "bankai run plan.json --bindings-json '[{\"key\":\"workspace\",\"value\":\"C:\\\\Users\\\\alice\\\\repos\\\\service\"}]'",
+      inlineObject: "bankai run plan.json --bindings-json '{\"workspace\":\"C:\\\\Users\\\\alice\\\\repos\\\\service\"}'",
     },
   };
 }

@@ -2,7 +2,7 @@
 
 import { Command, Option } from "commander";
 import { existsSync, readFileSync, watch } from "node:fs";
-import { mkdir, readFile, rm } from "node:fs/promises";
+import { appendFile, mkdir, readFile, rm } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 
@@ -35,6 +35,14 @@ import { checkRegisteredAlive, formatAlreadyRunningMessage } from "./registry/pr
 const pkgPath = join(dirname(fileURLToPath(import.meta.url)), "..", "package.json");
 const VERSION = (JSON.parse(readFileSync(pkgPath, "utf8")) as { version: string }).version;
 const VISIBLE_READY_TIMEOUT_MS = 10 * 60 * 1000;
+const VISIBLE_READY_POLL_MS = 1000;
+const VISIBLE_READY_PROGRESS_MS = 30 * 1000;
+
+interface ChildLogSummary {
+  lastEvent?: string;
+  lastFatalDetail?: string;
+  lastProgress?: string;
+}
 
 const program = new Command();
 
@@ -54,30 +62,197 @@ async function visibleTerminalPlanInfo(planPath: string): Promise<{ needsVisible
   return { needsVisibleTerminal, planName: loaded.plan.name, registerAs };
 }
 
-async function waitForVisibleReadyEvent(path: string, timeoutMs: number): Promise<{ ok: boolean; detail: unknown }> {
+async function waitForVisibleReadyEvent(path: string, timeoutMs: number, opts: {
+  env: ReturnType<typeof createNodeEnv>;
+  logFile: string;
+  transcriptFile: string;
+  launchPid?: number;
+  registerAs?: string;
+}): Promise<{ ok: boolean; detail: unknown }> {
   if (existsSync(path)) {
     const raw = await readFile(path, "utf8");
     const detail = JSON.parse(raw) as { ok?: boolean };
     return { ok: detail.ok !== false, detail };
   }
   await mkdir(dirname(path), { recursive: true });
-  await new Promise<void>((resolve, reject) => {
+  let settled = false;
+  let result: { ok: boolean; detail: unknown } | undefined;
+  let lastProgressReportAt = opts.env.clock.now();
+  let lastProgress = "";
+  await new Promise<void>((resolve) => {
     const dir = dirname(path);
-    const watcher = watch(dir, () => {
-      if (existsSync(path)) {
-        clearTimeout(timer);
-        watcher.close();
-        resolve();
+    const timers: {
+      watcher?: ReturnType<typeof watch>;
+      pollTimer?: NodeJS.Timeout;
+      timeoutTimer?: NodeJS.Timeout;
+    } = {};
+    const finish = (next: { ok: boolean; detail: unknown }): void => {
+      if (settled) {
+        return;
       }
+      settled = true;
+      result = next;
+      if (timers.pollTimer) {
+        clearInterval(timers.pollTimer);
+      }
+      if (timers.timeoutTimer) {
+        clearTimeout(timers.timeoutTimer);
+      }
+      timers.watcher?.close();
+      resolve();
+    };
+    const checkReadyFile = (): boolean => {
+      if (existsSync(path)) {
+        void readFile(path, "utf8").then((raw) => {
+          const detail = JSON.parse(raw) as { ok?: boolean };
+          finish({ ok: detail.ok !== false, detail });
+        }).catch((err) => {
+          finish({ ok: false, detail: { event: "bankai.failed", ok: false, detail: err instanceof Error ? err.message : String(err) } });
+        });
+        return true;
+      }
+      return false;
+    };
+    timers.watcher = watch(dir, () => {
+      checkReadyFile();
     });
-    const timer = setTimeout(() => {
-      watcher.close();
-      reject(new Error(`visible terminal did not report readiness after ${timeoutMs}ms`));
+    timers.pollTimer = setInterval(() => {
+      if (checkReadyFile()) {
+        return;
+      }
+      void summarizeChildLog(opts.logFile).then((summary) => {
+        if (settled) {
+          return;
+        }
+        if (summary.lastFatalDetail) {
+          finish({ ok: false, detail: { event: "bankai.failed", ok: false, detail: summary.lastFatalDetail, lastEvent: summary.lastEvent } });
+          return;
+        }
+        if (summary.lastProgress && summary.lastProgress !== lastProgress) {
+          lastProgress = summary.lastProgress;
+          opts.env.logger.warn(`bankai: child progress: ${lastProgress}`);
+        }
+        const now = opts.env.clock.now();
+        if (now - lastProgressReportAt >= VISIBLE_READY_PROGRESS_MS) {
+          lastProgressReportAt = now;
+          const last = summary.lastEvent ? ` Last child event: ${summary.lastEvent}.` : "";
+          const progress = summary.lastProgress ? ` Latest child progress: ${summary.lastProgress}.` : "";
+          opts.env.logger.warn(`bankai: still waiting for visible-terminal readiness.${last}${progress} Press Ctrl+C to stop.`);
+        }
+      }).catch(() => {});
+    }, VISIBLE_READY_POLL_MS);
+    timers.timeoutTimer = setTimeout(() => {
+      finish({ ok: false, detail: { event: "bankai.failed", ok: false, detail: `visible terminal did not report readiness after ${timeoutMs}ms` } });
     }, timeoutMs);
   });
+  return result ?? { ok: false, detail: { event: "bankai.failed", ok: false, detail: "visible terminal readiness wait ended without a result" } };
+}
+
+async function summarizeChildLog(path: string): Promise<ChildLogSummary> {
+  if (!existsSync(path)) {
+    return {};
+  }
   const raw = await readFile(path, "utf8");
-  const detail = JSON.parse(raw) as { ok?: boolean };
-  return { ok: detail.ok !== false, detail };
+  const summary: ChildLogSummary = {};
+  for (const line of raw.split(/\r?\n/)) {
+    if (!line.trim()) {
+      continue;
+    }
+    try {
+      const event = JSON.parse(line) as {
+        event?: string;
+        reason?: string;
+        detail?: unknown;
+        error?: string;
+        line?: string;
+        ok?: boolean;
+      };
+      summary.lastEvent = event.event ?? summary.lastEvent;
+      if (typeof event.line === "string") {
+        const progress = extractProgressLine(event.line);
+        if (progress) {
+          summary.lastProgress = progress;
+        }
+      }
+      const fatal = fatalDetail(event);
+      if (fatal) {
+        summary.lastFatalDetail = fatal;
+      }
+    } catch {
+      continue;
+    }
+  }
+  return summary;
+}
+
+function fatalDetail(event: {
+  event?: string;
+  reason?: string;
+  detail?: unknown;
+  error?: string;
+  ok?: boolean;
+}): string | undefined {
+  if (event.event === "plan.load-error" || event.event === "bindings.load-error") {
+    return `${event.event}: ${event.reason ?? stringifyDetail(event.detail)}`;
+  }
+  if (event.event === "bindings.validation-error") {
+    return `${event.event}: ${stringifyDetail(event.detail)}`;
+  }
+  if (event.event === "step.attached-process.fail") {
+    return `${event.event}: ${event.error ?? stringifyDetail(event.detail)}`;
+  }
+  if ((event.event === "run.end" || event.event === "plan.end" || event.event === "step.end") && event.ok === false) {
+    return `${event.event}: failed`;
+  }
+  return undefined;
+}
+
+function stringifyDetail(detail: unknown): string {
+  if (typeof detail === "string") {
+    return detail;
+  }
+  if (detail === undefined) {
+    return "unknown";
+  }
+  return JSON.stringify(detail);
+}
+
+function extractProgressLine(line: string): string | undefined {
+  const sync = line.match(/sync\s*\[\d+\/\d+\]/i);
+  if (sync) {
+    return sync[0];
+  }
+  if (line.includes("Press CTRL-C to stop")) {
+    return "Press CTRL-C to stop";
+  }
+  return undefined;
+}
+
+function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function cleanupVisibleLaunchRecord(opts: {
+  env: ReturnType<typeof createNodeEnv>;
+  name: string | undefined;
+  launchPid: number | undefined;
+  transcriptFile: string;
+  detail: unknown;
+}): Promise<void> {
+  if (!opts.name || !opts.launchPid) {
+    return;
+  }
+  const store = createRegistryStore({ env: opts.env });
+  const entry = await store.getEntry(opts.name);
+  if (entry?.envKind === "visible-terminal-launch" && entry.pid === opts.launchPid && !isPidAlive(entry.pid)) {
+    await store.removeEntry(opts.name);
+  }
+  await appendFile(opts.transcriptFile, `Bankai visible terminal failure: ${stringifyDetail(opts.detail)}\n`, "utf8").catch(() => {});
 }
 
 program
@@ -90,9 +265,10 @@ program
   .description("Execute a plan to completion")
   .option("--log-dir <path>", "directory to write the JSONL run log into")
   .option("--log-file <path>", "explicit log file path")
-  .option("--bindings-file <path>", "JSON array of {key,value} bindings")
-  .option("--bindings-json <json>", "inline JSON array of {key,value} bindings")
+  .option("--bindings-file <path>", "JSON array of {key,value} bindings or object shorthand")
+  .option("--bindings-json <json>", "inline JSON array of {key,value} bindings or object shorthand")
   .addOption(new Option("--visible-attached-terminal", "internal: attached-process already owns a visible terminal window").hideHelp())
+  .addOption(new Option("--visible-ready-event-file <path>", "internal: file used by visible-terminal child to report readiness or startup failure").hideHelp())
   .option("--out <path>", "also write the envelope JSON to this path")
   .action(async (planPath: string, opts: Record<string, unknown>) => {
     const visibleInfo = await visibleTerminalPlanInfo(planPath);
@@ -165,6 +341,7 @@ program
           logDir: opts.logDir as string | undefined,
           bindingsFile: opts.bindingsFile as string | undefined,
           bindingsJson: opts.bindingsJson as string | undefined,
+          visibleReadyEventFile: readyEventFile,
           out: opts.out as string | undefined,
         })
         : { launched: false, logFile, transcriptFile: `${logFile}.terminal.txt` };
@@ -192,7 +369,13 @@ program
       let waitFailure: Error | undefined;
       if (launch.launched) {
         try {
-          ready = await waitForVisibleReadyEvent(readyEventFile, VISIBLE_READY_TIMEOUT_MS);
+          ready = await waitForVisibleReadyEvent(readyEventFile, VISIBLE_READY_TIMEOUT_MS, {
+            env,
+            logFile,
+            transcriptFile: launch.transcriptFile,
+            launchPid: launch.pid,
+            registerAs: visibleInfo.registerAs,
+          });
         } catch (err) {
           waitFailure = err instanceof Error ? err : new Error(String(err));
         }
@@ -227,6 +410,15 @@ program
           detail: ready?.detail,
         },
       };
+      if (!envelope.ok) {
+        await cleanupVisibleLaunchRecord({
+          env,
+          name: visibleInfo.registerAs,
+          launchPid: launch.pid,
+          transcriptFile: launch.transcriptFile,
+          detail: envelope.failure?.reason ?? envelope.failure?.detail ?? "visible terminal failed",
+        });
+      }
       process.stdout.write(JSON.stringify(envelope, null, 2) + "\n");
       process.exit(envelope.ok ? 0 : 1);
     }
@@ -243,6 +435,7 @@ program
         logFile: opts.logFile as string | undefined,
         bindingsFile: opts.bindingsFile as string | undefined,
         bindingsJson: opts.bindingsJson as string | undefined,
+        visibleReadyEventFile: opts.visibleReadyEventFile as string | undefined,
         visibleAttachedTerminal: opts.visibleAttachedTerminal === true,
         signal: ac.signal,
       });
@@ -342,7 +535,7 @@ program
 program
   .command("schema [kind]")
   .description("Print the Bankai command schema, or explicit plan/bindings schemas")
-  .addHelpText("after", "\n\nKinds:\n  commands   Bankai command surface (default)\n  plan       Bankai plan JSON shape\n  bindings   JSON array shape for --bindings-file and --bindings-json\n")
+  .addHelpText("after", "\n\nKinds:\n  commands   Bankai command surface (default)\n  plan       Bankai plan JSON shape\n  bindings   JSON array or object shorthand for --bindings-file and --bindings-json\n")
   .action((kind: string | undefined) => {
     const normalized = normalizeSchemaKind(kind);
     if (!normalized) {

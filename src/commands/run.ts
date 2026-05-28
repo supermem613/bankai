@@ -7,6 +7,7 @@ import { loadPlan } from "../plan/load.js";
 import { runPlan } from "../orchestrator/run.js";
 import type { BankaiEnvelope } from "../plan/envelope.js";
 import { dirname, join } from "node:path";
+import { mkdir, rename, rm, writeFile } from "node:fs/promises";
 import {
   type BindingEntry,
   parseBindingsJson,
@@ -72,6 +73,7 @@ export async function runRunCommand(opts: RunCommandOptions): Promise<BankaiEnve
     if (opts.logger === undefined) {
       await logger.close();
     }
+    await writeVisibleReadyFailure({ path: opts.visibleReadyEventFile, env, logger, envelope });
     return envelope;
   }
 
@@ -103,6 +105,7 @@ export async function runRunCommand(opts: RunCommandOptions): Promise<BankaiEnve
     if (opts.logger === undefined) {
       await logger.close();
     }
+    await writeVisibleReadyFailure({ path: opts.visibleReadyEventFile, env, logger, envelope });
     return envelope;
   }
 
@@ -133,6 +136,7 @@ export async function runRunCommand(opts: RunCommandOptions): Promise<BankaiEnve
     if (opts.logger === undefined) {
       await logger.close();
     }
+    await writeVisibleReadyFailure({ path: opts.visibleReadyEventFile, env, logger, envelope });
     return envelope;
   }
 
@@ -166,6 +170,42 @@ export async function runRunCommand(opts: RunCommandOptions): Promise<BankaiEnve
     await logger.close();
   }
   return envelope;
+}
+
+async function writeVisibleReadyFailure(opts: {
+  path: string | undefined;
+  env: Env;
+  logger: RunLogger;
+  envelope: BankaiEnvelope;
+}): Promise<void> {
+  if (!opts.path) {
+    return;
+  }
+  try {
+    await writeJsonAtomic(opts.path, {
+      event: "bankai.failed",
+      ok: false,
+      command: opts.envelope.command,
+      planName: opts.envelope.planName,
+      planPath: opts.envelope.planPath,
+      failedAt: opts.env.clock.isoNow(),
+      failure: opts.envelope.failure,
+      logFile: opts.envelope.logFile,
+    });
+  } catch (err) {
+    opts.logger.emit("visible-ready-event.write-error", {
+      path: opts.path,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+async function writeJsonAtomic(path: string, value: unknown): Promise<void> {
+  await mkdir(dirname(path), { recursive: true });
+  const tmp = `${path}.${process.pid}.tmp`;
+  await writeFile(tmp, JSON.stringify(value, null, 2) + "\n", "utf8");
+  await rm(path, { force: true });
+  await rename(tmp, path);
 }
 
 function automaticBindings(opts: { env: Env; repoRoot: string; planPath: string; logger: RunLogger }): BindingEntry[] {

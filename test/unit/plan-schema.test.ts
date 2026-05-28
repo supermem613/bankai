@@ -98,7 +98,7 @@ describe("plan schema", () => {
         {
           id: "run-cli",
           kind: "shell",
-          command: "kash",
+          command: "agent-cli",
           args: ["start", { binding: "siteUrl" }, { fileText: { binding: "workspace", path: "prompt.txt" } }, true, 3],
           stdoutFile: { binding: "workspace", path: "response.json" },
           alwaysRun: true,
