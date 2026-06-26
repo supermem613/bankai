@@ -106,6 +106,15 @@ export const WriteFileStepResultSchema = z.object({
   bytes: z.number().int().nonnegative(),
 });
 
+export const SkippedStepResultSchema = z.object({
+  reason: z.enum(["runIf", "skipIf"]),
+  binding: z.string().min(1),
+  present: z.boolean(),
+  expectedPresent: z.boolean().optional(),
+  actual: z.union([z.string(), z.number(), z.boolean()]).optional(),
+  expected: z.union([z.string(), z.number(), z.boolean()]).optional(),
+});
+
 export const BankaiStepResultSchema = z.object({
   id: z.string().min(1),
   kind: z.string().min(1),
@@ -114,6 +123,7 @@ export const BankaiStepResultSchema = z.object({
   finishedAt: z.string().min(1),
   durationMs: z.number().int().nonnegative(),
   error: z.string().optional(),
+  skipped: SkippedStepResultSchema.optional(),
   shell: ShellStepResultSchema.optional(),
   tool: ToolStepResultSchema.optional(),
   assert: AssertStepResultSchema.optional(),

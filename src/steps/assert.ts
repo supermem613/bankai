@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { registerStep, type StepContext, type StepRunResult } from "./registry.js";
 import { getAssertionHandler } from "../assertions/registry.js";
+import { BindingConditionSchema } from "../bindings.js";
 
 // assert step kind: closed step kind that dispatches to the closed
 // assertion registry. An assert step references an assertion by kind
@@ -29,6 +30,8 @@ export const AssertStepV1Schema = z
     config: z.unknown().optional(),
     continueOnFail: z.boolean().optional(),
     alwaysRun: z.boolean().optional(),
+    runIf: BindingConditionSchema.optional(),
+    skipIf: BindingConditionSchema.optional(),
   })
   .strict()
   .superRefine((spec, ctx) => {

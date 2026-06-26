@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { getStepHandler, listRegisteredStepKinds } from "../steps/registry.js";
-import { RequiresSchema } from "../bindings.js";
+import { BindingConditionSchema, RequiresSchema } from "../bindings.js";
 
 // BankaiPlanV1: the single unified plan shape. A plan is a name plus a
 // sequence of steps. There is NO kind discriminator on the plan itself.
@@ -51,6 +51,8 @@ export const StepRefSchema = z
     kind: z.string().min(1),
     continueOnFail: z.boolean().optional(),
     alwaysRun: z.boolean().optional(),
+    runIf: BindingConditionSchema.optional(),
+    skipIf: BindingConditionSchema.optional(),
   })
   .passthrough()
   .superRefine((step, ctx) => {

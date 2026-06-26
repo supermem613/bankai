@@ -4,7 +4,7 @@ import { createWriteStream, readFileSync, statSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { registerStep, type StepContext, type StepRunResult } from "./registry.js";
-import { BindingPathRefSchema, BindingValueRefSchema, interpolateBindings, resolveBindingPath, resolveBindingValueRef } from "../bindings.js";
+import { BindingConditionSchema, BindingPathRefSchema, BindingValueRefSchema, evaluateBindingCondition, interpolateBindings, resolveBindingPath, resolveBindingValueRef } from "../bindings.js";
 import type { Env } from "../env-runtime/env.js";
 import { terminateProcessTree } from "../process-tree.js";
 import { CommandNotFoundError, resolveCommand } from "../spawn/resolve-command.js";
@@ -42,11 +42,19 @@ const ShellArgFileTextSchema = z.object({
 
 const ShellArgSchema = z.union([z.string(), z.number(), z.boolean(), ShellArgFileTextSchema, BindingValueRefSchema]);
 
+const ShellArgGroupSchema = z.object({
+  id: z.string().min(1).optional(),
+  skipIfAbsent: z.string().min(1),
+  args: z.array(ShellArgSchema).min(1),
+}).strict();
+
+const ShellArgOrGroupSchema = z.union([ShellArgSchema, ShellArgGroupSchema]);
+
 export const ShellStepV1Schema = z.object({
   kind: z.literal("shell"),
   id: z.string().min(1),
   command: z.string().min(1),
-  args: z.array(ShellArgSchema).default([]),
+  args: z.array(ShellArgOrGroupSchema).default([]),
   resolveCommand: z.boolean().default(true),
   cwd: BindingPathRefSchema.optional(),
   stdoutFile: BindingPathRefSchema.optional(),
@@ -58,6 +66,8 @@ export const ShellStepV1Schema = z.object({
   env: z.record(z.string(), z.string()).optional(),
   continueOnFail: z.boolean().optional(),
   alwaysRun: z.boolean().optional(),
+  runIf: BindingConditionSchema.optional(),
+  skipIf: BindingConditionSchema.optional(),
 }).strict();
 
 export type ShellStepV1 = z.infer<typeof ShellStepV1Schema>;
@@ -69,20 +79,39 @@ interface ResolvedShellCommand {
   windowsVerbatimArguments?: boolean;
 }
 
-function resolveShellArgs(spec: ShellStepV1, ctx: StepContext): string[] {
-  return spec.args.map((arg) => {
-    if (typeof arg === "object") {
-      if ("fileText" in arg) {
-        const file = resolveBindingPath(arg.fileText, { workDir: ctx.workDir, bindings: ctx.bindings });
-        const size = statSync(file).size;
-        if (size > DEFAULT_ARG_FILE_BYTES) {
-          throw new Error(`arg file "${file}" exceeds ${DEFAULT_ARG_FILE_BYTES} bytes`);
-        }
-        return readFileSync(file, "utf8");
+function resolveShellArg(arg: z.infer<typeof ShellArgSchema>, ctx: StepContext): string {
+  if (typeof arg === "object") {
+    if ("fileText" in arg) {
+      const file = resolveBindingPath(arg.fileText, { workDir: ctx.workDir, bindings: ctx.bindings });
+      const size = statSync(file).size;
+      if (size > DEFAULT_ARG_FILE_BYTES) {
+        throw new Error(`arg file "${file}" exceeds ${DEFAULT_ARG_FILE_BYTES} bytes`);
       }
-      return resolveBindingValueRef(arg, { workDir: ctx.workDir, bindings: ctx.bindings });
+      return readFileSync(file, "utf8");
     }
-    return typeof arg === "string" ? interpolateBindings(arg, { bindings: ctx.bindings }) : String(arg);
+    return resolveBindingValueRef(arg, { workDir: ctx.workDir, bindings: ctx.bindings });
+  }
+  return typeof arg === "string" ? interpolateBindings(arg, { bindings: ctx.bindings }) : String(arg);
+}
+
+function resolveShellArgs(spec: ShellStepV1, ctx: StepContext): string[] {
+  return spec.args.flatMap((arg) => {
+    if (typeof arg === "object") {
+      if ("skipIfAbsent" in arg) {
+        const condition = evaluateBindingCondition({ binding: arg.skipIfAbsent, present: false }, { bindings: ctx.bindings });
+        if (condition.matches) {
+          ctx.logger.emit("step.shell.arg-group.omitted", {
+            stepId: spec.id,
+            groupId: arg.id,
+            binding: arg.skipIfAbsent,
+            reason: "binding absent",
+          });
+          return [];
+        }
+        return arg.args.map((groupArg) => resolveShellArg(groupArg, ctx));
+      }
+    }
+    return [resolveShellArg(arg, ctx)];
   });
 }
 

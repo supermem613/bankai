@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { registerStep, type StepContext, type StepRunResult } from "./registry.js";
 import { ReadinessProbeRefSchema } from "../plan/schema.js";
+import { BindingConditionSchema } from "../bindings.js";
 import { evaluateReadiness } from "../readiness/evaluate.js";
 import { getReadinessProbe } from "../readiness/registry.js";
 import type { ProcessHandle } from "../registry/types.js";
@@ -35,6 +36,8 @@ export const WaitStepV1Schema = z
     pollIntervalMs: z.number().int().positive().default(250),
     continueOnFail: z.boolean().optional(),
     alwaysRun: z.boolean().optional(),
+    runIf: BindingConditionSchema.optional(),
+    skipIf: BindingConditionSchema.optional(),
   })
   .strict()
   .superRefine((spec, ctx) => {

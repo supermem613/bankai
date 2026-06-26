@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { registerStep, type StepContext, type StepRunResult } from "./registry.js";
 import { getTool } from "../tools/registry.js";
-import { BindingPathRefSchema, resolveBindingPath } from "../bindings.js";
+import { BindingConditionSchema, BindingPathRefSchema, resolveBindingPath } from "../bindings.js";
 
 // tool step kind: closed step kind that dispatches to the OPEN registry
 // of tool plugins under src/tools/. The outer schema is closed; only
@@ -19,6 +19,8 @@ export const ToolStepV1Schema = z
     timeoutMs: z.number().int().positive().default(60_000),
     continueOnFail: z.boolean().optional(),
     alwaysRun: z.boolean().optional(),
+    runIf: BindingConditionSchema.optional(),
+    skipIf: BindingConditionSchema.optional(),
   })
   .strict()
   .superRefine((spec, ctx) => {

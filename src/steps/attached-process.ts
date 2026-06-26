@@ -5,7 +5,7 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import { z } from "zod";
 import { registerStep, type StepContext, type StepRunResult } from "./registry.js";
-import { BindingPathRefSchema, resolveBindingPath } from "../bindings.js";
+import { BindingConditionSchema, BindingPathRefSchema, resolveBindingPath } from "../bindings.js";
 import { ReadinessProbeRefSchema } from "../plan/schema.js";
 import { getReadinessProbe } from "../readiness/registry.js";
 import { evaluateReadiness } from "../readiness/evaluate.js";
@@ -63,6 +63,8 @@ export const AttachedProcessStepV1Schema = z.object({
   announceReady: z.boolean().default(true),
   continueOnFail: z.boolean().optional(),
   alwaysRun: z.boolean().optional(),
+  runIf: BindingConditionSchema.optional(),
+  skipIf: BindingConditionSchema.optional(),
 }).strict().superRefine((spec, ctx) => {
   if (spec.stdio === "inherit" && (spec.readyWhen.length > 0 || spec.failWhen.length > 0)) {
     ctx.addIssue({

@@ -8,6 +8,7 @@ import type { ProcessHandle } from "../registry/types.js";
 import type { ResolvedBindings } from "../bindings.js";
 import type {
   AssertStepResultSchema,
+  SkippedStepResultSchema,
   WaitStepResultSchema,
   StopStepResultSchema,
   RunPlanStepResultSchema,
@@ -89,6 +90,7 @@ export interface SetupStepRun {
 export interface StepRunResult {
   ok: boolean;
   error?: string;
+  skipped?: z.infer<typeof SkippedStepResultSchema>;
   shell?: ShellStepRun;
   tool?: ToolStepRun;
   assert?: z.infer<typeof AssertStepResultSchema>;

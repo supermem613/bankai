@@ -3,6 +3,7 @@ import { isAbsolute, resolve } from "node:path";
 import { registerStep, type StepContext, type StepRunResult } from "./registry.js";
 import { loadPlan } from "../plan/load.js";
 import { runPlan } from "../orchestrator/run.js";
+import { BindingConditionSchema } from "../bindings.js";
 
 // run-plan step kind: execute another plan inline as a sub-step. Pure
 // composition primitive. Lets a top-level plan invoke a smaller plan
@@ -28,6 +29,8 @@ export const RunPlanStepV1Schema = z.object({
   plan: z.string().min(1),
   continueOnFail: z.boolean().optional(),
   alwaysRun: z.boolean().optional(),
+  runIf: BindingConditionSchema.optional(),
+  skipIf: BindingConditionSchema.optional(),
 }).strict();
 
 export type RunPlanStepV1 = z.infer<typeof RunPlanStepV1Schema>;

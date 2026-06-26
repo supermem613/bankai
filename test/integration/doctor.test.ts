@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import { strict as assert } from "node:assert";
 import { runDoctorCommand } from "../../src/commands/doctor.js";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createNodeEnv } from "../../src/env-runtime/env.js";
 import { createRegistryStore } from "../../src/registry/store.js";
@@ -64,6 +64,49 @@ describe("doctor", () => {
       assert.ok(envelope.checks?.some((c) => c.name === "registry-prune" && c.ok));
       const after = await store.read();
       assert.equal(after.entries["stale-handle"], undefined);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("validates plans with conditional service primitives", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "bankai-doctor-plan-"));
+    try {
+      const planPath = join(tmp, "conditional.plan.json");
+      writeFileSync(
+        planPath,
+        JSON.stringify({
+          schemaVersion: "1",
+          name: "conditional-services",
+          requires: {
+            bindings: {
+              mode: { type: "string", required: true },
+              spfxDevServerUrl: { type: "url", required: false },
+            },
+          },
+          steps: [
+            {
+              id: "cli",
+              kind: "shell",
+              command: "kash",
+              runIf: { binding: "mode", equals: "alTest" },
+              args: [
+                "run",
+                {
+                  id: "spfx",
+                  skipIfAbsent: "spfxDevServerUrl",
+                  args: ["--spfx-dev-server", { binding: "spfxDevServerUrl" }],
+                },
+              ],
+            },
+          ],
+        }),
+      );
+
+      const envelope = await runDoctorCommand({ planPath, logDir: join(tmp, "logs"), repoRoot: tmp });
+
+      assert.equal(envelope.ok, true, JSON.stringify(envelope.failure));
+      assert.ok(envelope.checks?.some((check) => check.name === "plan:conditional-services" && check.ok));
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

@@ -2,7 +2,7 @@ import { z } from "zod";
 import { registerStep, type StepContext, type StepRunResult } from "./registry.js";
 import { getEnvironment } from "../environments/registry.js";
 import type { ProcessHandle, RegistryEntry } from "../registry/types.js";
-import { BindingPathRefSchema, resolveBindingPath } from "../bindings.js";
+import { BindingConditionSchema, BindingPathRefSchema, resolveBindingPath } from "../bindings.js";
 
 // setup step kind: invoke an environment plugin (noop, managed-process,
 // future docker, ...). Two paths through this step:
@@ -38,6 +38,8 @@ export const SetupStepV1Schema = z
     cwd: BindingPathRefSchema.optional(),
     continueOnFail: z.boolean().optional(),
     alwaysRun: z.boolean().optional(),
+    runIf: BindingConditionSchema.optional(),
+    skipIf: BindingConditionSchema.optional(),
   })
   .strict()
   .superRefine((spec, ctx) => {

@@ -20,7 +20,10 @@ describe("schema command", () => {
   });
 
   it("keeps plan and bindings schemas available by explicit kind", () => {
-    assert.ok((schemaDocument("plan") as { plan?: unknown }).plan);
+    const plan = schemaDocument("plan") as { plan?: { steps?: unknown[] }; conditions?: unknown };
+    assert.ok(plan.plan);
+    assert.ok(plan.conditions);
+    assert.ok(JSON.stringify(plan.plan.steps).includes("skipIfAbsent"));
     const bindings = schemaDocument("bindings") as { arrayShape?: unknown; objectShorthand?: unknown };
     assert.ok(bindings.arrayShape);
     assert.ok(bindings.objectShorthand);

@@ -3,6 +3,7 @@ import { registerStep, type StepContext, type StepRunResult } from "./registry.j
 import { isProcessAlive, terminateProcessTree } from "../process-tree.js";
 import { verifyFingerprint } from "../fingerprint.js";
 import { stopViaStdin } from "../stop-stdin.js";
+import { BindingConditionSchema } from "../bindings.js";
 
 // stop step kind: terminate a registered handle by name. Verifies
 // fingerprint before signaling unless `force` is set. Updates the
@@ -26,6 +27,8 @@ export const StopStepV1Schema = z.object({
   force: z.boolean().default(false),
   continueOnFail: z.boolean().optional(),
   alwaysRun: z.boolean().optional(),
+  runIf: BindingConditionSchema.optional(),
+  skipIf: BindingConditionSchema.optional(),
 }).strict();
 
 export type StopStepV1 = z.infer<typeof StopStepV1Schema>;

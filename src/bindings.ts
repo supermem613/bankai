@@ -51,6 +51,25 @@ export const BindingValueRefSchema = z.object({
 
 export type BindingValueRef = z.infer<typeof BindingValueRefSchema>;
 
+export const BindingConditionSchema = z.object({
+  binding: z.string().min(1),
+  present: z.boolean().optional(),
+  equals: BindingValueSchema.optional(),
+}).strict().refine((condition) => condition.present !== undefined || condition.equals !== undefined, {
+  message: "condition must set present or equals",
+});
+
+export type BindingCondition = z.infer<typeof BindingConditionSchema>;
+
+export interface BindingConditionEvaluation {
+  matches: boolean;
+  binding: string;
+  present: boolean;
+  expectedPresent?: boolean;
+  actual?: BindingValue;
+  expected?: BindingValue;
+}
+
 export interface ResolveBindingsResultOk {
   ok: true;
   bindings: ResolvedBindings;
@@ -175,6 +194,21 @@ export function resolveBindingValueRef(ref: BindingValueRef, opts: { workDir: st
     return resolve(base, ref.path);
   }
   return String(value);
+}
+
+export function evaluateBindingCondition(condition: BindingCondition, opts: { bindings: ResolvedBindings }): BindingConditionEvaluation {
+  const value = opts.bindings[condition.binding];
+  const present = value !== undefined;
+  const presentMatches = condition.present === undefined || condition.present === present;
+  const equalsMatches = condition.equals === undefined || value === condition.equals;
+  return {
+    matches: presentMatches && equalsMatches,
+    binding: condition.binding,
+    present,
+    expectedPresent: condition.present,
+    actual: value,
+    expected: condition.equals,
+  };
 }
 
 export function interpolateBindings(value: string, opts: { bindings: ResolvedBindings }): string {

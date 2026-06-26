@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { z } from "zod";
-import { BindingPathRefSchema, BindingValueRefSchema, interpolateBindings, resolveBindingPath, resolveBindingValueRef } from "../bindings.js";
+import { BindingConditionSchema, BindingPathRefSchema, BindingValueRefSchema, interpolateBindings, resolveBindingPath, resolveBindingValueRef } from "../bindings.js";
 import { registerStep, type StepContext, type StepRunResult } from "./registry.js";
 
 const ContentSchema = z.union([z.string(), BindingValueRefSchema]);
@@ -15,6 +15,8 @@ export const WriteFileStepV1Schema = z.object({
   maxBytes: z.number().int().positive().default(1_048_576),
   continueOnFail: z.boolean().optional(),
   alwaysRun: z.boolean().optional(),
+  runIf: BindingConditionSchema.optional(),
+  skipIf: BindingConditionSchema.optional(),
 }).strict();
 
 export type WriteFileStepV1 = z.infer<typeof WriteFileStepV1Schema>;

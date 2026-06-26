@@ -26,11 +26,26 @@ export function schemaDocument(kind: SchemaKind = "commands"): unknown {
         {
           kind: "attached-process",
           id: "dev",
+          runIf: { binding: "targetUrl", present: true },
           cwd: { binding: "workspace" },
           command: "npm",
           args: ["run", "dev"],
         },
+        {
+          kind: "shell",
+          id: "optional-cli",
+          command: "kash",
+          args: [
+            "run",
+            { id: "spfx-dev-server", skipIfAbsent: "targetUrl", args: ["--spfx-dev-server", { binding: "targetUrl" }] },
+          ],
+        },
       ],
+    },
+    conditions: {
+      runIf: { binding: "targetUrl", present: true },
+      skipIf: { binding: "mode", equals: "disabled" },
+      shellArgGroup: { id: "spfx-dev-server", skipIfAbsent: "targetUrl", args: ["--spfx-dev-server", { binding: "targetUrl" }] },
     },
     bindingTypes: ["string", "number", "boolean", "path", "url"],
     bindingReference: {

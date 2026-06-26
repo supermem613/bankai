@@ -82,6 +82,9 @@ workflow code:
 - `shell` runs a command with schema-checked args. Args can reference bindings
   with `{ "binding": "name" }`, bound paths with `{ "binding": "name",
   "path": "file.json" }`, or string templates like `{{bankaiRunId}}`.
+  Optional arg groups use `{ "id": "spfx", "skipIfAbsent": "bindingName",
+  "args": ["--flag", { "binding": "bindingName" }] }` to omit a flag-plus-value
+  pair when an optional binding is absent.
 - `write-file` writes bounded UTF-8 text to a relative path or bound path.
   Content can use the same `{{bindingName}}` templates.
 - `assert-json` reads a JSON file and checks path existence, scalar equality,
@@ -89,6 +92,9 @@ workflow code:
 - `assert-text` reads a text file and checks contains/not-contains/regex.
 - `alwaysRun` can be set on cleanup steps so they still execute after an
   earlier step fails.
+- Steps can set `runIf` or `skipIf` with binding conditions such as
+  `{ "binding": "mode", "equals": "alTest" }` or
+  `{ "binding": "spfxDevServerUrl", "present": true }`.
 
 `bankai run` injects reserved automatic bindings for generated artifacts:
 `bankaiRunId`, `bankaiLogFile`, `bankaiOutputDir`, `bankaiPlanDir`, and

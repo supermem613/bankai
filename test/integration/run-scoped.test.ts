@@ -395,6 +395,138 @@ describe("orchestrator: scoped plans", () => {
     assert.equal(envelope.steps[0].shell?.stdoutTail.trim(), workspace);
   });
 
+  it("omits conditional shell arg groups when their optional binding is absent", async () => {
+    const planPath = join(tmp, "optional-args.plan.json");
+    writeFileSync(
+      planPath,
+      JSON.stringify({
+        schemaVersion: "1",
+        name: "optional-args",
+        requires: { bindings: { spfxDevServerUrl: { type: "url", required: false } } },
+        steps: [
+          {
+            id: "kash",
+            kind: "shell",
+            command: process.execPath,
+            args: [
+              "-e",
+              "process.stdout.write(JSON.stringify(process.argv.slice(1)))",
+              "--",
+              {
+                id: "spfx-dev-server",
+                skipIfAbsent: "spfxDevServerUrl",
+                args: ["--spfx-dev-server", { binding: "spfxDevServerUrl" }],
+              },
+            ],
+          },
+        ],
+      }),
+    );
+
+    const envelope = await runRunCommand({ planPath, env: createNodeEnv(), logDir: join(tmp, "logs"), repoRoot: tmp });
+
+    assert.equal(envelope.ok, true, JSON.stringify(envelope.failure));
+    assert.deepEqual(JSON.parse(envelope.steps[0].shell?.stdoutTail ?? "[]"), []);
+    const events = readFileSync(envelope.logFile, "utf8").trim().split("\n").map((line) => JSON.parse(line) as { event: string; groupId?: string; binding?: string });
+    assert.ok(events.some((event) => event.event === "step.shell.arg-group.omitted" && event.groupId === "spfx-dev-server" && event.binding === "spfxDevServerUrl"));
+  });
+
+  it("includes conditional shell arg groups when their optional binding is present", async () => {
+    const planPath = join(tmp, "optional-args-present.plan.json");
+    writeFileSync(
+      planPath,
+      JSON.stringify({
+        schemaVersion: "1",
+        name: "optional-args-present",
+        requires: { bindings: { spfxDevServerUrl: { type: "url", required: false } } },
+        steps: [
+          {
+            id: "kash",
+            kind: "shell",
+            command: process.execPath,
+            args: [
+              "-e",
+              "process.stdout.write(JSON.stringify(process.argv.slice(1)))",
+              "--",
+              {
+                id: "spfx-dev-server",
+                skipIfAbsent: "spfxDevServerUrl",
+                args: ["--spfx-dev-server", { binding: "spfxDevServerUrl" }],
+              },
+            ],
+          },
+        ],
+      }),
+    );
+
+    const envelope = await runRunCommand({
+      planPath,
+      env: createNodeEnv(),
+      logDir: join(tmp, "logs"),
+      repoRoot: tmp,
+      bindingsJson: JSON.stringify({ spfxDevServerUrl: "https://localhost:4321" }),
+    });
+
+    assert.equal(envelope.ok, true, JSON.stringify(envelope.failure));
+    assert.deepEqual(JSON.parse(envelope.steps[0].shell?.stdoutTail ?? "[]"), ["--spfx-dev-server", "https://localhost:4321"]);
+  });
+
+  it("skips steps when runIf and skipIf binding conditions say not to run", async () => {
+    const planPath = join(tmp, "conditional-steps.plan.json");
+    writeFileSync(
+      planPath,
+      JSON.stringify({
+        schemaVersion: "1",
+        name: "conditional-steps",
+        requires: {
+          bindings: {
+            mode: { type: "string", required: true },
+            spfxDevServerUrl: { type: "url", required: false },
+          },
+        },
+        steps: [
+          {
+            id: "normal-only",
+            kind: "shell",
+            command: process.execPath,
+            args: ["-e", "process.stdout.write('normal')"],
+            skipIf: { binding: "mode", equals: "alTest" },
+          },
+          {
+            id: "altest-only",
+            kind: "shell",
+            command: process.execPath,
+            args: ["-e", "process.stdout.write('altest')"],
+            runIf: { binding: "mode", equals: "alTest" },
+          },
+          {
+            id: "spfx-only",
+            kind: "shell",
+            command: process.execPath,
+            args: ["-e", "process.stdout.write('spfx')"],
+            runIf: { binding: "spfxDevServerUrl", present: true },
+          },
+        ],
+      }),
+    );
+
+    const envelope = await runRunCommand({
+      planPath,
+      env: createNodeEnv(),
+      logDir: join(tmp, "logs"),
+      repoRoot: tmp,
+      bindingsJson: JSON.stringify({ mode: "alTest" }),
+    });
+
+    assert.equal(envelope.ok, true, JSON.stringify(envelope.failure));
+    assert.deepEqual(envelope.steps.map((step) => ({ id: step.id, ok: step.ok, skipped: step.skipped })), [
+      { id: "normal-only", ok: true, skipped: { reason: "skipIf", binding: "mode", present: true, actual: "alTest", expected: "alTest" } },
+      { id: "altest-only", ok: true, skipped: undefined },
+      { id: "spfx-only", ok: true, skipped: { reason: "runIf", binding: "spfxDevServerUrl", present: false, expectedPresent: true } },
+    ]);
+    assert.equal(envelope.steps[1].shell?.stdoutTail, "altest");
+  });
+
   it("writes visible ready failure file when bindings validation fails before launch", async () => {
     const readyEventFile = join(tmp, "startup-failed.ready.json");
     const planPath = join(tmp, "startup-failed.plan.json");

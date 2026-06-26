@@ -108,6 +108,45 @@ describe("plan schema", () => {
     assert.ok(r.success, JSON.stringify(r.success ? null : r.error.issues));
   });
 
+  it("accepts conditional shell arg groups and step binding conditions", () => {
+    const r = BankaiPlanV1Schema.safeParse({
+      schemaVersion: "1",
+      name: "conditional-services",
+      requires: {
+        bindings: {
+          mode: { type: "string", required: true },
+          spfxDevServerUrl: { type: "url", required: false },
+        },
+      },
+      steps: [
+        {
+          id: "cli",
+          kind: "shell",
+          command: "kash",
+          runIf: { binding: "mode", equals: "alTest" },
+          args: [
+            "run",
+            {
+              id: "spfx",
+              skipIfAbsent: "spfxDevServerUrl",
+              args: ["--spfx-dev-server", { binding: "spfxDevServerUrl" }],
+            },
+          ],
+        },
+      ],
+    });
+
+    assert.ok(r.success, JSON.stringify(r.success ? null : r.error.issues));
+  });
+
+  it("rejects binding conditions without a presence or value predicate", () => {
+    assertRejectsWith(parsePlan({
+      schemaVersion: "1",
+      name: "bad-condition",
+      steps: [{ id: "s1", kind: "shell", command: "node", runIf: { binding: "mode" } }],
+    }), "condition must set present or equals");
+  });
+
   it("rejects an unknown step kind with a clear message", () => {
     const r = BankaiPlanV1Schema.safeParse({
       schemaVersion: "1",

@@ -14,7 +14,7 @@ import {
 } from "../steps/registry.js";
 import { createHandleStore } from "./handle-store.js";
 import { createLifecycleScope } from "../environments/lifecycle-scope.js";
-import type { ResolvedBindings } from "../bindings.js";
+import { evaluateBindingCondition, type BindingCondition, type ResolvedBindings } from "../bindings.js";
 
 // runPlan: execute a BankaiPlanV1 to completion. Iterates steps in
 // order. Each step receives a StepContext bound to the same logger,
@@ -102,6 +102,33 @@ function toEnvelopeStep(id: string, kind: string, started: string, finished: str
     runPlan: run.runPlan,
     attachedProcess: run.attachedProcess,
     writeFile: run.writeFile,
+    skipped: run.skipped,
+  };
+}
+
+function skippedStepResult(stepRef: BankaiPlanV1["steps"][number], reason: "runIf" | "skipIf", condition: BindingCondition, bindings: ResolvedBindings): StepRunResult | undefined {
+  const evaluation = evaluateBindingCondition(condition, { bindings });
+  const shouldSkip = reason === "runIf" ? !evaluation.matches : evaluation.matches;
+  if (!shouldSkip) {
+    return undefined;
+  }
+  const skipped: StepRunResult["skipped"] = {
+    reason,
+    binding: evaluation.binding,
+    present: evaluation.present,
+  };
+  if (evaluation.expectedPresent !== undefined) {
+    skipped.expectedPresent = evaluation.expectedPresent;
+  }
+  if (evaluation.actual !== undefined) {
+    skipped.actual = evaluation.actual;
+  }
+  if (evaluation.expected !== undefined) {
+    skipped.expected = evaluation.expected;
+  }
+  return {
+    ok: true,
+    skipped,
   };
 }
 
@@ -152,6 +179,28 @@ export async function runPlan(opts: RunPlanOptions): Promise<BankaiEnvelope> {
       if (!firstFailure) {
         firstFailure = { stage: "internal", reason: "run aborted" };
       }
+      continue;
+    }
+    const runIfSkipped = stepRef.runIf ? skippedStepResult(stepRef, "runIf", stepRef.runIf, bindings) : undefined;
+    const skipIfSkipped = !runIfSkipped && stepRef.skipIf ? skippedStepResult(stepRef, "skipIf", stepRef.skipIf, bindings) : undefined;
+    const conditionSkipped = runIfSkipped ?? skipIfSkipped;
+    if (conditionSkipped) {
+      const stepStarted = env.clock.isoNow();
+      const stepStartedNow = env.clock.now();
+      const stepFinished = env.clock.isoNow();
+      const stepDuration = env.clock.now() - stepStartedNow;
+      logger.emit("step.skipped", {
+        stepId: stepRef.id,
+        reason: conditionSkipped.skipped?.reason,
+        binding: conditionSkipped.skipped?.binding,
+        present: conditionSkipped.skipped?.present,
+        actual: conditionSkipped.skipped?.actual,
+        expected: conditionSkipped.skipped?.expected,
+        expectedPresent: conditionSkipped.skipped?.expectedPresent,
+      });
+      const envelopeStep = toEnvelopeStep(stepRef.id, stepRef.kind, stepStarted, stepFinished, stepDuration, conditionSkipped);
+      envelopeSteps.push(envelopeStep);
+      priorResults.set(stepRef.id, conditionSkipped);
       continue;
     }
     const handler = getStepHandler(stepRef.kind);
