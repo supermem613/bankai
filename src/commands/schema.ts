@@ -135,7 +135,7 @@ function commandSchemaDocument(): unknown {
       {
         name: "update",
         usage: "bankai update",
-        summary: "Self-update this Bankai git checkout.",
+        summary: "Self-update this Bankai checkout, pulling with auto-detected sd or git.",
         arguments: [],
         options: commonEnvelopeOptions(),
         envelope: {

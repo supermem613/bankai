@@ -67,8 +67,9 @@ npm link    # makes `bankai` available globally
   then escalate to process-tree termination on timeout.
 - `doctor` - run health checks, validate an optional plan, and prune stale
   registry state with `--prune`.
-- `update` - self-update this Bankai git checkout with `git pull --ff-only`,
-  dependency install, and rebuild when changes arrive.
+- `update` - self-update this Bankai checkout by auto-detecting soda-managed
+  installs and using `sd pull`; other installs use `git pull --ff-only`.
+  Dependencies install and rebuild only when changes arrive.
 - `schema` - print the Bankai command surface by default. Use `schema plan` or
   `schema bindings` for plan-authoring internals.
 

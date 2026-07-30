@@ -15,13 +15,26 @@ export interface CommandResult {
   stderrBytes: number;
 }
 
+type RunCommand = (command: string, args: string[], cwd: string, env: Env) => Promise<CommandResult>;
+
 export interface UpdateCommandOptions {
   env?: Env;
   repoRoot?: string;
   logDir?: string;
   logFile?: string;
   isGitRepo?: (repoRoot: string) => Promise<boolean>;
-  runCommand?: (command: string, args: string[], cwd: string, env: Env) => Promise<CommandResult>;
+  runCommand?: RunCommand;
+}
+
+interface SodaEnvelope<TData> {
+  ok?: boolean;
+  data?: TData;
+  error?: string;
+}
+
+interface SodaPullOutcome {
+  status?: string;
+  worktreeUpdated?: boolean;
 }
 
 export function gitPullMadeNoChanges(output: string): boolean {
@@ -66,22 +79,16 @@ export async function runUpdateCommand(opts: UpdateCommandOptions = {}): Promise
     return envelope;
   }
 
-  const gitStep = await runUpdateStep({
-    id: "git-pull",
-    command: "git",
-    args: ["pull", "--ff-only"],
-    cwd: repoRoot,
-    env,
-    logger,
-    runCommand,
-  });
-  steps.push(gitStep.step);
-  if (!gitStep.step.ok) {
-    return await finishUpdate({ env, logger, startedAt, startedNow, steps, failureReason: gitStep.step.error ?? "git pull failed" });
+  const sodaManaged = await isSodaManagedRepo(repoRoot, runCommand, env);
+  const pullStep = await (sodaManaged
+    ? runSodaPullStep({ cwd: repoRoot, env, logger, runCommand })
+    : runGitPullStep({ cwd: repoRoot, env, logger, runCommand }));
+  steps.push(pullStep.step);
+  if (!pullStep.step.ok) {
+    return await finishUpdate({ env, logger, startedAt, startedNow, steps, failureReason: pullStep.step.error ?? "pull failed" });
   }
 
-  const gitOutput = `${gitStep.result.stdout}\n${gitStep.result.stderr}`;
-  if (gitPullMadeNoChanges(gitOutput)) {
+  if (!pullStep.worktreeChanged) {
     logger.emit("update.skip", { reason: "already up to date" });
     return await finishUpdate({ env, logger, startedAt, startedNow, steps });
   }
@@ -117,6 +124,54 @@ export async function runUpdateCommand(opts: UpdateCommandOptions = {}): Promise
   return await finishUpdate({ env, logger, startedAt, startedNow, steps });
 }
 
+async function runGitPullStep(opts: {
+  cwd: string;
+  env: Env;
+  logger: ReturnType<typeof createRunLogger>;
+  runCommand: RunCommand;
+}): Promise<{ step: BankaiStepResult; result: CommandResult; worktreeChanged: boolean }> {
+  const gitStep = await runUpdateStep({
+    id: "git-pull",
+    command: "git",
+    args: ["pull", "--ff-only"],
+    cwd: opts.cwd,
+    env: opts.env,
+    logger: opts.logger,
+    runCommand: opts.runCommand,
+  });
+  const gitOutput = `${gitStep.result.stdout}\n${gitStep.result.stderr}`;
+  return {
+    ...gitStep,
+    worktreeChanged: gitStep.step.ok && !gitPullMadeNoChanges(gitOutput),
+  };
+}
+
+async function runSodaPullStep(opts: {
+  cwd: string;
+  env: Env;
+  logger: ReturnType<typeof createRunLogger>;
+  runCommand: RunCommand;
+}): Promise<{ step: BankaiStepResult; result: CommandResult; worktreeChanged: boolean }> {
+  const sodaStep = await runUpdateStep({
+    id: "sd-pull",
+    command: "sd",
+    args: ["pull"],
+    cwd: opts.cwd,
+    env: opts.env,
+    logger: opts.logger,
+    runCommand: opts.runCommand,
+    validateResult: validateSodaPullResult,
+  });
+  if (!sodaStep.step.ok) {
+    return { ...sodaStep, worktreeChanged: false };
+  }
+  const envelope = parseSodaEnvelope<SodaPullOutcome[]>(sodaStep.result.stdout);
+  return {
+    ...sodaStep,
+    worktreeChanged: Array.isArray(envelope?.data) && envelope.data.some((outcome) => outcome.worktreeUpdated === true),
+  };
+}
+
 async function runUpdateStep(opts: {
   id: string;
   command: string;
@@ -124,13 +179,15 @@ async function runUpdateStep(opts: {
   cwd: string;
   env: Env;
   logger: ReturnType<typeof createRunLogger>;
-  runCommand: (command: string, args: string[], cwd: string, env: Env) => Promise<CommandResult>;
+  runCommand: RunCommand;
+  validateResult?: (result: CommandResult) => { ok: boolean; error?: string };
 }): Promise<{ step: BankaiStepResult; result: CommandResult }> {
   const startedAt = opts.env.clock.isoNow();
   const startedNow = opts.env.clock.now();
   opts.logger.emit("update.step.start", { stepId: opts.id, command: opts.command, args: opts.args, cwd: opts.cwd });
   const result = await opts.runCommand(opts.command, opts.args, opts.cwd, opts.env);
-  const ok = result.exitCode === 0;
+  const validation = opts.validateResult?.(result);
+  const ok = validation?.ok ?? result.exitCode === 0;
   const finishedAt = opts.env.clock.isoNow();
   const step: BankaiStepResult = {
     id: opts.id,
@@ -139,7 +196,7 @@ async function runUpdateStep(opts: {
     startedAt,
     finishedAt,
     durationMs: opts.env.clock.now() - startedNow,
-    error: ok ? undefined : `${opts.command} ${opts.args.join(" ")} exited with code ${result.exitCode}`,
+    error: ok ? undefined : validation?.error ?? `${opts.command} ${opts.args.join(" ")} exited with code ${result.exitCode}`,
     shell: {
       exitCode: result.exitCode,
       stdoutBytes: result.stdoutBytes,
@@ -184,6 +241,55 @@ async function finishUpdate(opts: {
 
 async function defaultIsGitRepo(repoRoot: string): Promise<boolean> {
   return existsSync(`${repoRoot}/.git`) || existsSync(`${repoRoot}\\.git`);
+}
+
+// soda's git-interlock hooks block raw git writes in an sd-powered repo, and
+// soda tracks stream state a raw `git pull` bypasses, so a soda-managed
+// checkout must self-update through `sd`. `initialized: true` is the
+// authoritative signal: a plain git repo that `sd` can merely read reports
+// false, and anything that cannot answer stays on git. `sd` is an npm bin shim
+// on Windows, and defaultRunCommand's resolveCommand already wraps .cmd targets
+// in ComSpec, so no extra spawn handling is needed here.
+async function isSodaManagedRepo(repoRoot: string, runCommand: RunCommand, env: Env): Promise<boolean> {
+  try {
+    const result = await runCommand("sd", ["status"], repoRoot, env);
+    if (result.exitCode !== 0) {
+      return false;
+    }
+    const envelope = parseSodaEnvelope<{ summary?: { initialized?: boolean } }>(result.stdout);
+    return envelope?.ok === true && envelope.data?.summary?.initialized === true;
+  } catch {
+    return false;
+  }
+}
+
+function parseSodaEnvelope<TData>(stdout: string): SodaEnvelope<TData> | undefined {
+  try {
+    return JSON.parse(stdout) as SodaEnvelope<TData>;
+  } catch {
+    return undefined;
+  }
+}
+
+function validateSodaPullResult(result: CommandResult): { ok: boolean; error?: string } {
+  const envelope = parseSodaEnvelope<SodaPullOutcome[]>(result.stdout);
+  if (result.exitCode !== 0) {
+    return { ok: false, error: `sd pull failed: ${envelope?.error ?? nonEmpty(result.stderr, result.stdout) ?? `exit code ${result.exitCode}`}` };
+  }
+  if (!envelope) {
+    return { ok: false, error: "sd pull failed: unparseable sd pull output" };
+  }
+  if (envelope.ok !== true) {
+    return { ok: false, error: `sd pull failed: ${envelope.error ?? "unknown error"}` };
+  }
+  if (!Array.isArray(envelope.data)) {
+    return { ok: false, error: "sd pull failed: missing pull outcomes" };
+  }
+  return { ok: true };
+}
+
+function nonEmpty(...values: string[]): string | undefined {
+  return values.map((value) => value.trim()).find((value) => value.length > 0);
 }
 
 async function defaultRunCommand(command: string, args: string[], cwd: string, env: Env): Promise<CommandResult> {

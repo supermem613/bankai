@@ -57,6 +57,9 @@ bankai update
 bankai schema [commands|plan|bindings]
 ```
 
+`bankai update` auto-detects whether the install checkout is soda-managed and
+pulls with `sd pull`; other checkouts use `git pull --ff-only`.
+
 ## Dev-loop lifecycle
 
 For attached dev loops, `bankai run <plan>` is the startup proof. It blocks

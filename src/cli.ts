@@ -519,7 +519,7 @@ program
 
 program
   .command("update")
-  .description("Self-update this Bankai git checkout")
+  .description("Self-update this Bankai checkout, pulling with auto-detected sd or git")
   .option("--log-dir <path>", "directory to write the JSONL run log into")
   .option("--log-file <path>", "explicit log file path")
   .option("--out <path>", "also write the envelope JSON to this path")
