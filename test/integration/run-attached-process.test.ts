@@ -10,7 +10,7 @@ import { runLogsCommand } from "../../src/commands/logs.js";
 import { runStopCommand } from "../../src/commands/stop.js";
 import { createNodeEnv } from "../../src/env-runtime/env.js";
 import { createRegistryStore } from "../../src/registry/store.js";
-import { captureFingerprint } from "../../src/fingerprint.js";
+import { captureFingerprint, FINGERPRINT_PROBE_TIMEOUT_MS } from "../../src/fingerprint.js";
 import type { RegistryEntry } from "../../src/registry/types.js";
 
 import "../../src/steps/index.js";
@@ -70,6 +70,14 @@ describe("orchestrator: attached-process plans", () => {
   // before the parent's lock-acquire + write of the registry returns, so
   // tests that synchronize on a child-written file must still poll for the
   // registry entry before assuming `bankai status` will see it.
+  //
+  // The parent's first putEntry is gated behind captureFingerprint, whose
+  // Windows probe spawns powershell.exe and is allowed a full
+  // FINGERPRINT_PROBE_TIMEOUT_MS. This budget must therefore stay strictly
+  // greater than that probe timeout, or a slow-but-legal probe on a loaded
+  // CI runner fails the test before registration can happen.
+  const REGISTRY_WAIT_TIMEOUT_MS = FINGERPRINT_PROBE_TIMEOUT_MS * 4;
+
   async function waitForRegistryEntry(opts: {
     env: ReturnType<typeof createNodeEnv>;
     logDir: string;
@@ -77,7 +85,8 @@ describe("orchestrator: attached-process plans", () => {
     name: string;
     timeoutMs?: number;
   }): Promise<Awaited<ReturnType<typeof runStatusCommand>>> {
-    const deadline = Date.now() + (opts.timeoutMs ?? 5000);
+    const timeoutMs = opts.timeoutMs ?? REGISTRY_WAIT_TIMEOUT_MS;
+    const deadline = Date.now() + timeoutMs;
     let last: Awaited<ReturnType<typeof runStatusCommand>> | undefined;
     while (Date.now() < deadline) {
       last = await runStatusCommand({ env: opts.env, logDir: opts.logDir, repoRoot: opts.repoRoot });
@@ -87,8 +96,15 @@ describe("orchestrator: attached-process plans", () => {
       }
       await new Promise((r) => setTimeout(r, 50));
     }
-    throw new Error(`registry entry "${opts.name}" did not appear within ${opts.timeoutMs ?? 5000}ms; last registry: ${JSON.stringify(last?.registry)}`);
+    throw new Error(`registry entry "${opts.name}" did not appear within ${timeoutMs}ms; last registry: ${JSON.stringify(last?.registry)}`);
   }
+
+  it("budgets registry waits above the fingerprint probe timeout", () => {
+    assert.ok(
+      REGISTRY_WAIT_TIMEOUT_MS > FINGERPRINT_PROBE_TIMEOUT_MS,
+      `registry wait budget ${REGISTRY_WAIT_TIMEOUT_MS}ms must exceed fingerprint probe timeout ${FINGERPRINT_PROBE_TIMEOUT_MS}ms`,
+    );
+  });
 
   function isPidAlive(pid: number): boolean {
     try {

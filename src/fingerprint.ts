@@ -44,7 +44,12 @@ export interface VerifyResult {
   current?: ProcessFingerprint;
 }
 
-const DEFAULT_TIMEOUT_MS = 5000;
+// Upper bound on a single fingerprint probe. Callers that wait on work
+// gated behind captureFingerprint must budget strictly more than this,
+// otherwise a legal slow probe reads as a hang.
+export const FINGERPRINT_PROBE_TIMEOUT_MS = 5000;
+
+const DEFAULT_TIMEOUT_MS = FINGERPRINT_PROBE_TIMEOUT_MS;
 
 async function runProbe(
   env: Env,
