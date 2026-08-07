@@ -53,15 +53,18 @@
     "commander": "^13.1.0",
     "zod": "^3.24.4"
   },
+  "overrides": {
+    "js-yaml": "^5.2.2"
+  },
   "devDependencies": {
-    "@eslint/js": "^9.18.0",
+    "@eslint/js": "^9.39.5",
     "@types/node": "^22.15.0",
     "c8": "^11.0.0",
-    "eslint": "^9.18.0",
+    "eslint": "^9.39.5",
     "globals": "^15.14.0",
-    "minimatch": "^10.0.1",
+    "minimatch": "^10.2.6",
     "tsx": "^4.21.0",
     "typescript": "^5.7.0",
-    "typescript-eslint": "^8.20.0"
+    "typescript-eslint": "^8.65.0"
   }
 }
